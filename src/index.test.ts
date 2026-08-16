@@ -6,11 +6,11 @@ import type { PluginInput } from "@opencode-ai/plugin";
 import { startMockMattermost } from "../test/mock-server.js";
 import plugin from "./index.js";
 
-const input = {} as PluginInput;
 const MM_KEYS = ["MM_URL", "MM_TOKEN", "MM_TEAM"] as const;
 
 let cwd: string;
 let sandbox: string;
+let input: PluginInput;
 let saved: Record<string, string | undefined>;
 const errors: string[] = [];
 const realError = console.error;
@@ -18,6 +18,7 @@ const realError = console.error;
 beforeAll(async () => {
   cwd = process.cwd();
   sandbox = await mkdtemp(join(tmpdir(), "mm-oc-plugin-"));
+  input = { directory: sandbox } as PluginInput;
   process.chdir(sandbox);
   saved = Object.fromEntries(MM_KEYS.map((key) => [key, process.env[key]]));
   for (const key of MM_KEYS) delete process.env[key];
@@ -89,6 +90,23 @@ describe("plugin entry", () => {
       expect(Object.keys(hooks.tool ?? {})).toHaveLength(13);
     } finally {
       for (const key of MM_KEYS) delete process.env[key];
+      server.stop();
+    }
+  });
+
+  it("reads .env.local from the project directory, not the process cwd", async () => {
+    const server = startMockMattermost();
+    const project = await mkdtemp(join(tmpdir(), "mm-oc-project-"));
+    await Bun.write(
+      join(project, ".env.local"),
+      [`MM_URL=${server.url}`, "MM_TOKEN=tok", "MM_TEAM=my-team"].join("\n"),
+    );
+    try {
+      const hooks = await plugin({ directory: project } as PluginInput, undefined);
+      expect(Object.keys(hooks.tool ?? {})).toHaveLength(13);
+    } finally {
+      for (const key of MM_KEYS) delete process.env[key];
+      await rm(project, { recursive: true, force: true });
       server.stop();
     }
   });

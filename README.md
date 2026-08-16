@@ -59,9 +59,9 @@ Every request asks for English (`Accept-Language: en`). Mattermost picks the lan
 messages from that header alone — not from the token user's locale — so on a server whose default
 locale is not English the tools would otherwise report failures in that language.
 
-The `.env.local` file is a development convenience only — it is read relative to the host
-process's working directory, so an installed plugin will not find one inside the package. Use
-real environment variables or plugin options instead.
+The `.env.local` file is a development convenience only — it is read from the opencode project
+directory (the one `--dir` points at, not the shell's working directory), so an installed plugin
+will not find one inside the package. Use real environment variables or plugin options instead.
 
 ## Tools
 

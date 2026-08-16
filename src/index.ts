@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import type { Plugin, PluginOptions } from "@opencode-ai/plugin";
 import { createMattermostClient } from "./mattermost/client.js";
 import { createMattermostContext, withTimeout } from "./mattermost/context.js";
@@ -11,8 +12,10 @@ function strOption(options: PluginOptions | undefined, key: string): string | un
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
-export default (async (_input, options) => {
-  loadEnvFile();
+export default (async (input, options) => {
+  // Anchored to the project directory, not the process cwd: `opencode run --dir=<project>` leaves
+  // the cwd wherever it was launched, and a relative path would miss the project's `.env.local`.
+  loadEnvFile(join(input.directory, ".env.local"));
   let env: MattermostEnv | undefined;
   try {
     env = readMattermostEnv();
