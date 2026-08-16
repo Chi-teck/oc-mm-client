@@ -1,3 +1,4 @@
+import { ClientError } from "@mattermost/client";
 import type { FileSearchResultItem } from "@mattermost/types/files";
 import type { Post } from "@mattermost/types/posts";
 import type { UserProfile } from "@mattermost/types/users";
@@ -62,7 +63,18 @@ export function editPostTool(ctx: MattermostContext) {
         await ctx.client.patchPost({ id: postId, message });
         return { title: "Mattermost: edited post", output: `Edited post ${postId}` };
       }
-      await ctx.client.deletePost(postId);
+      try {
+        await ctx.client.deletePost(postId);
+      } catch (error) {
+        // Deleting a thread root also deletes its replies, so deleting a reply afterwards hits a
+        // post the server can no longer find. The end state is the one asked for, so report that
+        // instead of the server's (localized) "unable to get the post".
+        if (!(error instanceof ClientError) || error.status_code !== 404) throw error;
+        return {
+          title: "Mattermost: deleted post",
+          output: `Post ${postId} is already deleted or does not exist — nothing to do.`,
+        };
+      }
       return { title: "Mattermost: deleted post", output: `Deleted post ${postId}` };
     },
   });

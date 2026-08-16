@@ -269,6 +269,28 @@ describe("mattermost_read_posts", () => {
     expect(Date.now() - since).toBeGreaterThanOrEqual(7_200_000 - 1000);
   });
 
+  it("omits deleted posts from since reads", async () => {
+    const now = Date.now();
+    const live = post({ message: "still here", create_at: now });
+    // Tombstones come back with a blank body; `state` is only set by some server versions.
+    const tombstone = post({ message: "", create_at: now, delete_at: now });
+    const flagged = post({ message: "", create_at: now, delete_at: now, state: "DELETED" });
+    const client = mockClient({ posts: [live, tombstone, flagged] });
+    const { readPosts } = makeTools(client);
+    const result = await readPosts({ channel: "my-channel", since: "10m" }, toolCtx);
+    const output = typeof result === "string" ? result : result.output;
+    expect(output.split("\n")).toEqual(["**mmbot** (just now): still here"]);
+  });
+
+  it("reads as empty when every post in the window was deleted", async () => {
+    const now = Date.now();
+    const client = mockClient({ posts: [post({ message: "", create_at: now, delete_at: now })] });
+    const { readPosts } = makeTools(client);
+    const result = await readPosts({ channel: "my-channel", since: "10m" }, toolCtx);
+    const output = typeof result === "string" ? result : result.output;
+    expect(output).toBe("(no posts)");
+  });
+
   it("uses getPinnedPosts when pinned", async () => {
     const client = mockClient();
     const { readPosts, calls } = makeTools(client);

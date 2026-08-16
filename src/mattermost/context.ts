@@ -194,6 +194,9 @@ export function createMattermostContext(
     const all = list.order
       .map((id) => list.posts[id])
       .filter((post): post is Post => Boolean(post))
+      // A `since` read carries tombstones for posts deleted inside the window: `delete_at` is set
+      // and the body is blanked. They are there to invalidate a client cache, not to be read.
+      .filter((post) => !post.delete_at && post.state !== "DELETED")
       .sort((a, b) => a.create_at - b.create_at);
     if (!all.length) return "(no posts)";
     const shown = all.length > limit ? all.slice(all.length - limit) : all;

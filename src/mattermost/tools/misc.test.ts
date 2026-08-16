@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import type { Client4 } from "@mattermost/client";
+import { type Client4, ClientError } from "@mattermost/client";
 import type { ServerChannel } from "@mattermost/types/channels";
 import type { Post } from "@mattermost/types/posts";
 import type { ToolContext } from "@opencode-ai/plugin";
@@ -183,6 +183,44 @@ describe("mattermost_edit_post", () => {
     );
     expect(client.state.calls.deletePost).toEqual([["ppppppppppppppppppppppppp1"]]);
   });
+  it("reports a post that is already gone instead of the server's error", async () => {
+    const client = mockClient();
+    client.deletePost = async () => {
+      throw new ClientError(config.url, {
+        message: "Не удалось получить сообщение",
+        server_error_id: "app.post.get.app_error",
+        status_code: 404,
+      });
+    };
+    const ctx = createMattermostContext(config, client);
+    const result = await editPostTool(ctx).execute(
+      { post_id: "ppppppppppppppppppppppppp1", action: "delete" },
+      toolCtx(),
+    );
+    const output = typeof result === "string" ? result : result.output;
+    expect(output).toBe(
+      "Post ppppppppppppppppppppppppp1 is already deleted or does not exist — nothing to do.",
+    );
+  });
+
+  it("propagates delete failures other than a missing post", async () => {
+    const client = mockClient();
+    client.deletePost = async () => {
+      throw new ClientError(config.url, {
+        message: "You do not have the appropriate permissions",
+        server_error_id: "api.context.permissions.app_error",
+        status_code: 403,
+      });
+    };
+    const ctx = createMattermostContext(config, client);
+    await expect(
+      editPostTool(ctx).execute(
+        { post_id: "ppppppppppppppppppppppppp1", action: "delete" },
+        toolCtx(),
+      ),
+    ).rejects.toThrow("You do not have the appropriate permissions");
+  });
+
   it("edit_post and dm ask before executing; search and list_members do not", async () => {
     const client = mockClient();
     const ctx = createMattermostContext(config, client);
