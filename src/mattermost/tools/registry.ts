@@ -1,5 +1,6 @@
 import type { ToolDefinition } from "@opencode-ai/plugin";
 import type { MattermostContext } from "../context.js";
+import { apiTool } from "./api.js";
 import { listChannelsTool } from "./channels.js";
 import { getFileTool } from "./files.js";
 import { dmTool, editPostTool, listMembersTool, searchTool } from "./misc.js";
@@ -19,5 +20,6 @@ export function createTools(ctx: MattermostContext): Record<string, ToolDefiniti
     mattermost_search: searchTool(ctx),
     mattermost_list_members: listMembersTool(ctx),
     mattermost_dm: dmTool(ctx),
+    mattermost_api: apiTool(ctx),
   };
 }

@@ -75,9 +75,9 @@ export function reactionSummary(post: Post): string {
   return [...counts].map(([emoji, count]) => `:${emoji}: ${count}`).join(" ");
 }
 
-export function truncate(body: string, hint: string): string {
-  if (body.length <= MAX_BODY) return body;
-  return `${body.slice(0, MAX_BODY)}\n**[truncated at ${MAX_BODY} chars — ${hint}]**`;
+export function truncate(body: string, hint: string, max = MAX_BODY): string {
+  if (body.length <= max) return body;
+  return `${body.slice(0, max)}\n**[truncated at ${max} chars — ${hint}]**`;
 }
 
 export function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {

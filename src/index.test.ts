@@ -45,7 +45,7 @@ describe("plugin entry", () => {
     try {
       const hooks = await plugin(input, { url: server.url, token: "tok", team: "my-team" });
       expect(Object.keys(hooks.tool ?? {})).toContain("mattermost_read_posts");
-      expect(Object.keys(hooks.tool ?? {})).toHaveLength(11);
+      expect(Object.keys(hooks.tool ?? {})).toHaveLength(12);
       expect(server.paths).toContain("/api/v4/users/me");
       expect(server.paths).toContain("/api/v4/teams/name/my-team");
     } finally {
@@ -86,7 +86,7 @@ describe("plugin entry", () => {
     process.env.MM_TEAM = "my-team";
     try {
       const hooks = await plugin(input, undefined);
-      expect(Object.keys(hooks.tool ?? {})).toHaveLength(11);
+      expect(Object.keys(hooks.tool ?? {})).toHaveLength(12);
     } finally {
       for (const key of MM_KEYS) delete process.env[key];
       server.stop();
