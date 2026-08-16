@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: ["1.x"]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Lint, typecheck, test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install
+        run: bun install --frozen-lockfile
+
+      - name: Lint
+        run: bun run lint
+
+      - name: Typecheck
+        if: ${{ !cancelled() }}
+        run: bun run check
+
+      - name: Test
+        if: ${{ !cancelled() }}
+        run: bun test

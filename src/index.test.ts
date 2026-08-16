@@ -1,0 +1,95 @@
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { PluginInput } from "@opencode-ai/plugin";
+import { startMockMattermost } from "../test/mock-server.js";
+import plugin from "./index.js";
+
+const input = {} as PluginInput;
+const MM_KEYS = ["MM_URL", "MM_TOKEN", "MM_TEAM"] as const;
+
+let cwd: string;
+let sandbox: string;
+let saved: Record<string, string | undefined>;
+const errors: string[] = [];
+const realError = console.error;
+
+beforeAll(async () => {
+  cwd = process.cwd();
+  sandbox = await mkdtemp(join(tmpdir(), "mm-oc-plugin-"));
+  process.chdir(sandbox);
+  saved = Object.fromEntries(MM_KEYS.map((key) => [key, process.env[key]]));
+  for (const key of MM_KEYS) delete process.env[key];
+  console.error = (...args: unknown[]) => void errors.push(args.join(" "));
+});
+
+afterAll(async () => {
+  console.error = realError;
+  for (const key of MM_KEYS) {
+    const value = saved[key];
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  process.chdir(cwd);
+  await rm(sandbox, { recursive: true, force: true });
+});
+
+afterEach(() => {
+  errors.length = 0;
+});
+
+describe("plugin entry", () => {
+  it("registers every Mattermost tool once the credentials validate", async () => {
+    const server = startMockMattermost();
+    try {
+      const hooks = await plugin(input, { url: server.url, token: "tok", team: "my-team" });
+      expect(Object.keys(hooks.tool ?? {})).toContain("mattermost_read_posts");
+      expect(Object.keys(hooks.tool ?? {})).toHaveLength(11);
+      expect(server.paths).toContain("/api/v4/users/me");
+      expect(server.paths).toContain("/api/v4/teams/name/my-team");
+    } finally {
+      server.stop();
+    }
+  });
+
+  it("registers no tools when credentials are missing", async () => {
+    expect(await plugin(input, undefined)).toEqual({});
+    expect(errors.join("\n")).toContain("mm-oc-client disabled");
+  });
+
+  it("registers no tools when the server rejects the token", async () => {
+    const server = startMockMattermost({ unauthorized: true });
+    try {
+      expect(await plugin(input, { url: server.url, token: "bad", team: "my-team" })).toEqual({});
+      expect(errors.join("\n")).toContain("mm-oc-client disabled");
+    } finally {
+      server.stop();
+    }
+  });
+
+  it("blames the token, not the team, when the server rejects the token", async () => {
+    const server = startMockMattermost({ unauthorized: true });
+    try {
+      await plugin(input, { url: server.url, token: "bad", team: "my-team" });
+      expect(errors.join("\n")).toContain("Invalid or expired session");
+      expect(errors.join("\n")).not.toContain("team not found");
+    } finally {
+      server.stop();
+    }
+  });
+
+  it("takes credentials from the environment when no options are given", async () => {
+    const server = startMockMattermost();
+    process.env.MM_URL = server.url;
+    process.env.MM_TOKEN = "tok";
+    process.env.MM_TEAM = "my-team";
+    try {
+      const hooks = await plugin(input, undefined);
+      expect(Object.keys(hooks.tool ?? {})).toHaveLength(11);
+    } finally {
+      for (const key of MM_KEYS) delete process.env[key];
+      server.stop();
+    }
+  });
+});

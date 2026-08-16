@@ -1,0 +1,49 @@
+{
+  "name": "mm-oc-client",
+  "version": "0.1.0",
+  "description": "Mattermost client plugin for opencode",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Chi-teck/mm-oc-client.git"
+  },
+  "engines": {
+    "bun": ">=1.0.0"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./cli": "./src/cli.ts"
+  },
+  "bin": {
+    "mm-oc": "./src/cli.ts"
+  },
+  "files": [
+    "src",
+    "!src/**/*.test.ts"
+  ],
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "bun test",
+    "lint": "biome check .",
+    "format": "biome format --write ."
+  },
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "mattermost"
+  ],
+  "license": "MIT",
+  "peerDependencies": {
+    "@opencode-ai/plugin": ">=1.18.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.8",
+    "@opencode-ai/plugin": "^1.18.18",
+    "@types/bun": "^1.3.14",
+    "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "@mattermost/client": "11.9.0",
+    "@mattermost/types": "11.9.0"
+  }
+}
