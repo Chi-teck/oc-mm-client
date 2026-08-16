@@ -1,4 +1,5 @@
-import type { PostList } from "@mattermost/types/posts";
+import { ClientError } from "@mattermost/client";
+import type { Post, PostList } from "@mattermost/types/posts";
 import { tool } from "@opencode-ai/plugin";
 import type { MattermostContext } from "../context.js";
 
@@ -60,6 +61,46 @@ export function readPostsTool(ctx: MattermostContext) {
       }
       const output = await ctx.formatPosts(list, { limit: max, full });
       return { title: `Mattermost: ${resolved.name} (${scope})`, output };
+    },
+  });
+}
+
+export function getPostTool(ctx: MattermostContext) {
+  return tool({
+    description:
+      "Read one Mattermost post by id — its channel, author, body, reactions and attachments. Use it to check a single post (one just written, one named in a search hit) instead of reading the channel and filtering.",
+    args: {
+      post_id: tool.schema.string().describe("26-char post id"),
+      full: tool.schema
+        .boolean()
+        .optional()
+        .describe("Print the message body in full instead of cutting it at 500 chars"),
+    },
+    execute: async ({ post_id: postId, full }) => {
+      let post: Post;
+      try {
+        post = await ctx.client.getPost(postId);
+      } catch (error) {
+        // A deleted post and a post in an unreadable channel both answer 404, and the server's
+        // own message ("Unable to get the post.") distinguishes neither.
+        if (!(error instanceof ClientError) || error.status_code !== 404) throw error;
+        throw new Error(
+          `Post ${postId} not found — it is deleted, or in a channel this user cannot read.`,
+        );
+      }
+      const name = await ctx
+        .resolveChannel(post.channel_id)
+        .then((channel) => channel.name)
+        .catch(() => post.channel_id);
+      const list: PostList = {
+        order: [post.id],
+        posts: { [post.id]: post },
+        next_post_id: "",
+        prev_post_id: "",
+        first_inaccessible_post_time: 0,
+      };
+      const body = await ctx.formatPosts(list, { limit: 1, full });
+      return { title: `Mattermost: post in ${name}`, output: `in ${name}:\n${body}` };
     },
   });
 }

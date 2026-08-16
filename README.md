@@ -55,6 +55,10 @@ Missing or rejected credentials are not fatal: the plugin logs the reason and re
 An unreachable host gets 10 seconds before the plugin gives up, so it cannot hang opencode's
 startup.
 
+Every request asks for English (`Accept-Language: en`). Mattermost picks the language of its error
+messages from that header alone — not from the token user's locale — so on a server whose default
+locale is not English the tools would otherwise report failures in that language.
+
 The `.env.local` file is a development convenience only — it is read relative to the host
 process's working directory, so an installed plugin will not find one inside the package. Use
 real environment variables or plugin options instead.
@@ -65,6 +69,7 @@ real environment variables or plugin options instead.
 | --- | --- |
 | `mattermost_list_channels` | List the channels the token's user belongs to. |
 | `mattermost_read_posts` | Read channel posts: latest, `since` a time, `before` a post, a full thread, or pinned only. Bodies are cut at 500 characters unless `full=true`. |
+| `mattermost_get_post` | Read one post by id, with its channel, reactions and attachments. |
 | `mattermost_read_unread` | Unread and mention counts per channel, or the unread posts of one channel. |
 | `mattermost_search` | Search posts or files across the team. |
 | `mattermost_list_members` | List channel members, optionally fuzzy-matched by username. |

@@ -41,6 +41,7 @@ interface MockState {
   uploads: FormData[];
   createdPosts: unknown[];
   reactions: { user_id: string; emoji_name: string }[];
+  membership: ChannelMembership;
 }
 
 function mockClient(state: Partial<MockState> = {}): Client4 & { state: MockState } {
@@ -49,6 +50,12 @@ function mockClient(state: Partial<MockState> = {}): Client4 & { state: MockStat
     uploads: [],
     createdPosts: [],
     reactions: [{ user_id: ME_ID, emoji_name: "eyes" }],
+    membership: {
+      channel_id: CHANNEL_ID,
+      msg_count: 7,
+      mention_count: 2,
+      last_viewed_at: 1_700_000_000_000,
+    } as ChannelMembership,
     ...state,
   };
   const rec = (name: string) => s.order.push(name);
@@ -72,6 +79,14 @@ function mockClient(state: Partial<MockState> = {}): Client4 & { state: MockStat
       [
         { channel_id: CHANNEL_ID, msg_count: 0, mention_count: 0, last_viewed_at: 0 },
       ] as ChannelMembership[],
+    getChannel: async () => {
+      rec("getChannel");
+      return channel();
+    },
+    getChannelMember: async () => {
+      rec("getChannelMember");
+      return s.membership;
+    },
     uploadFile: async (form: FormData) => {
       rec("uploadFile");
       s.uploads.push(form);
@@ -315,17 +330,53 @@ describe("permission gating (ctx.ask)", () => {
     expect((asks[0] as { permission: string }).permission).toBe("mattermost_react");
     const result = await markReadTool(ctx).execute({ channel: "my-channel" }, rejectingCtx());
     const output = typeof result === "string" ? result : result.output;
-    expect(output).toBe("Marked my-channel read.");
+    expect(output).toBe("Marked my-channel read: 3 unread, 2 mentions cleared.");
   });
 });
 
 describe("mattermost_mark_read", () => {
-  it("marks the resolved channel viewed", async () => {
+  it("marks the resolved channel viewed and reports what it cleared", async () => {
     const client = mockClient();
     const ctx = createMattermostContext(config, client);
     const result = await markReadTool(ctx).execute({ channel: "my-channel" }, toolCtx());
-    expect(client.state.order).toEqual(["viewMyChannel", CHANNEL_ID]);
+    expect(client.state.order).toEqual([
+      "getChannel",
+      "getChannelMember",
+      "viewMyChannel",
+      CHANNEL_ID,
+    ]);
     const output = typeof result === "string" ? result : result.output;
-    expect(output).toBe("Marked my-channel read.");
+    expect(output).toBe("Marked my-channel read: 3 unread, 2 mentions cleared.");
+  });
+
+  it("writes a single mention in the singular", async () => {
+    const client = mockClient({
+      membership: {
+        channel_id: CHANNEL_ID,
+        msg_count: 9,
+        mention_count: 1,
+        last_viewed_at: 1,
+      } as ChannelMembership,
+    });
+    const ctx = createMattermostContext(config, client);
+    const result = await markReadTool(ctx).execute({ channel: "my-channel" }, toolCtx());
+    const output = typeof result === "string" ? result : result.output;
+    expect(output).toBe("Marked my-channel read: 1 unread, 1 mention cleared.");
+  });
+
+  it("says nothing was unread instead of claiming a clear that did nothing", async () => {
+    const client = mockClient({
+      membership: {
+        channel_id: CHANNEL_ID,
+        msg_count: 10,
+        mention_count: 0,
+        last_viewed_at: 1,
+      } as ChannelMembership,
+    });
+    const ctx = createMattermostContext(config, client);
+    const result = await markReadTool(ctx).execute({ channel: "my-channel" }, toolCtx());
+    expect(client.state.order).toEqual(["getChannel", "getChannelMember"]);
+    const output = typeof result === "string" ? result : result.output;
+    expect(output).toBe("my-channel was already read — nothing to clear.");
   });
 });

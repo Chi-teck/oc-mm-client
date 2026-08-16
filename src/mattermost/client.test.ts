@@ -32,6 +32,19 @@ describe("createMattermostClient", () => {
     expect(captured?.headers.authorization?.toLowerCase()).toBe("bearer tok");
   });
 
+  it("asks for English so server errors do not come back in the instance's locale", async () => {
+    let captured: Record<string, string> | undefined;
+    mockFetch((_url, init) => {
+      captured = Object.fromEntries(new Headers(init?.headers).entries());
+      return jsonResponse({ id: "u1", username: "mmbot" });
+    });
+
+    const client = createMattermostClient({ url: "https://mm.example.com", token: "tok" });
+    await client.getMe();
+
+    expect(captured?.["accept-language"]).toBe("en");
+  });
+
   it("posts messages with channel_id and message body", async () => {
     let captured: { url: string; method: string; body: string } | undefined;
     mockFetch((url, init) => {

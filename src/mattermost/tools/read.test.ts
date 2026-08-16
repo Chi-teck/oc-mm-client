@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import type { Client4 } from "@mattermost/client";
+import { type Client4, ClientError } from "@mattermost/client";
 import type { ChannelMembership, ServerChannel } from "@mattermost/types/channels";
 import type { Post, PostList } from "@mattermost/types/posts";
 import type { Reaction } from "@mattermost/types/reactions";
@@ -7,7 +7,7 @@ import type { ToolContext } from "@opencode-ai/plugin";
 import { createMattermostContext } from "../context.js";
 import type { MattermostEnv } from "../env.js";
 import { listChannelsTool } from "./channels.js";
-import { readPostsTool, readUnreadTool } from "./read.js";
+import { getPostTool, readPostsTool, readUnreadTool } from "./read.js";
 
 const config: MattermostEnv = { url: "https://mm.example.com", token: "tok", team: "my-team" };
 const ME_ID = "uuuuuuuuuuuuuuuuuuuuuuuuu1";
@@ -186,6 +186,18 @@ function mockClient(state: Partial<MockState> = {}): Client4 & { state: MockStat
       const pivot = s.posts.find((p) => p.id === postId);
       return postList(pivot ? s.posts.filter((p) => p.create_at < pivot.create_at) : s.posts);
     },
+    getPost: async (postId: string) => {
+      rec("getPost", postId);
+      const found = s.posts.find((p) => p.id === postId);
+      if (!found) {
+        throw new ClientError(config.url, {
+          message: "Unable to get the post.",
+          url: `${config.url}/api/v4/posts/${postId}`,
+          status_code: 404,
+        });
+      }
+      return found;
+    },
     getPostThread: async (postId: string) => {
       rec("getPostThread", postId);
       return { ...postList(s.posts), has_next: false };
@@ -222,6 +234,7 @@ function makeTools(client: Client4 & { state: MockState }) {
   return {
     listChannels: listChannelsTool(ctx).execute,
     readPosts: readPostsTool(ctx).execute,
+    getPost: getPostTool(ctx).execute,
     readUnread: readUnreadTool(ctx).execute,
     calls: client.state.calls,
   };
@@ -417,6 +430,48 @@ describe("mattermost_read_posts", () => {
     const { readPosts, calls } = makeTools(client);
     await readPosts({ channel: "my-channel" }, toolCtx);
     expect(calls.getProfilesByIds).toEqual([[[ME_ID]]]);
+  });
+});
+
+describe("mattermost_get_post", () => {
+  it("reads one post by id without paging the channel", async () => {
+    const wanted = post({ message: "the one", create_at: Date.now() });
+    const client = mockClient({ posts: [post({ message: "noise" }), wanted] });
+    const { getPost, calls } = makeTools(client);
+    const result = await getPost({ post_id: wanted.id }, toolCtx);
+    expect(calls.getPost).toEqual([[wanted.id]]);
+    expect(calls.getPosts).toBeUndefined();
+    expect(result).toEqual({
+      title: "Mattermost: post in my-channel",
+      output: "in my-channel:\n**mmbot** (just now): the one",
+    });
+  });
+
+  it("names the thread root when the post is a reply", async () => {
+    const reply = post({ message: "a reply", root_id: "rrrrrrrrrrrrrrrrrrrrrrrrrr" });
+    const client = mockClient({ posts: [reply] });
+    const { getPost } = makeTools(client);
+    const result = await getPost({ post_id: reply.id }, toolCtx);
+    const output = typeof result === "string" ? result : result.output;
+    expect(output).toContain("(thread rrrrrrrrrrrrrrrrrrrrrrrrrr)");
+  });
+
+  it("keeps a long body intact with full=true", async () => {
+    const long = post({ message: "x".repeat(600) });
+    const client = mockClient({ posts: [long] });
+    const { getPost } = makeTools(client);
+    const result = await getPost({ post_id: long.id, full: true }, toolCtx);
+    const output = typeof result === "string" ? result : result.output;
+    expect(output).toContain("x".repeat(600));
+    expect(output).not.toContain("truncated");
+  });
+
+  it("explains a 404 instead of relaying the server's message", async () => {
+    const client = mockClient();
+    const { getPost } = makeTools(client);
+    await expect(getPost({ post_id: "ppppppppppppppppppppppppp9" }, toolCtx)).rejects.toThrow(
+      "Post ppppppppppppppppppppppppp9 not found — it is deleted, or in a channel this user cannot read.",
+    );
   });
 });
 

@@ -126,10 +126,25 @@ export function markReadTool(ctx: MattermostContext) {
     },
     execute: async ({ channel }) => {
       const resolved = await ctx.resolveChannel(channel);
+      // Read the counters before clearing them — afterwards there is nothing left to count, and
+      // the resolved channel may be a cached copy with a stale total.
+      const [totals, membership] = await Promise.all([
+        ctx.client.getChannel(resolved.id),
+        ctx.client.getChannelMember(resolved.id, "me"),
+      ]);
+      const unread = Math.max(0, totals.total_msg_count - membership.msg_count);
+      const mentions = membership.mention_count;
+      if (unread === 0 && mentions === 0) {
+        return {
+          title: `Mattermost: ${resolved.name} already read`,
+          output: `${resolved.name} was already read — nothing to clear.`,
+        };
+      }
       await ctx.client.viewMyChannel(resolved.id);
+      const plural = mentions === 1 ? "" : "s";
       return {
         title: `Mattermost: marked ${resolved.name} read`,
-        output: `Marked ${resolved.name} read.`,
+        output: `Marked ${resolved.name} read: ${unread} unread, ${mentions} mention${plural} cleared.`,
       };
     },
   });
