@@ -17,7 +17,7 @@ const realError = console.error;
 
 beforeAll(async () => {
   cwd = process.cwd();
-  sandbox = await mkdtemp(join(tmpdir(), "mm-oc-plugin-"));
+  sandbox = await mkdtemp(join(tmpdir(), "oc-mm-plugin-"));
   input = { directory: sandbox } as PluginInput;
   process.chdir(sandbox);
   saved = Object.fromEntries(MM_KEYS.map((key) => [key, process.env[key]]));
@@ -56,14 +56,14 @@ describe("plugin entry", () => {
 
   it("registers no tools when credentials are missing", async () => {
     expect(await plugin(input, undefined)).toEqual({});
-    expect(errors.join("\n")).toContain("mm-oc-client disabled");
+    expect(errors.join("\n")).toContain("oc-mm-client disabled");
   });
 
   it("registers no tools when the server rejects the token", async () => {
     const server = startMockMattermost({ unauthorized: true });
     try {
       expect(await plugin(input, { url: server.url, token: "bad", team: "my-team" })).toEqual({});
-      expect(errors.join("\n")).toContain("mm-oc-client disabled");
+      expect(errors.join("\n")).toContain("oc-mm-client disabled");
     } finally {
       server.stop();
     }
@@ -96,7 +96,7 @@ describe("plugin entry", () => {
 
   it("reads .env.local from the project directory, not the process cwd", async () => {
     const server = startMockMattermost();
-    const project = await mkdtemp(join(tmpdir(), "mm-oc-project-"));
+    const project = await mkdtemp(join(tmpdir(), "oc-mm-project-"));
     await Bun.write(
       join(project, ".env.local"),
       [`MM_URL=${server.url}`, "MM_TOKEN=tok", "MM_TEAM=my-team"].join("\n"),

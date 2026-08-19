@@ -86,7 +86,7 @@ export function resolveTool(tools: ToolMap, name: string): ToolDefinition | unde
 
 export function usage(tools: ToolMap): string {
   const lines = [
-    "usage: mm-oc <tool> [key=value ...] [--yes]",
+    "usage: oc-mm <tool> [key=value ...] [--yes]",
     "",
     `The ${PREFIX} prefix is optional. Write tools need --yes; reads run unprompted.`,
     "Repeat a key to build a list: attachments=a.txt attachments=b.txt",

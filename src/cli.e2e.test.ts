@@ -34,17 +34,17 @@ async function runCli(args: string[]): Promise<{ code: number; stdout: string; s
   return { code, stdout, stderr };
 }
 
-describe("mm-oc exit codes", () => {
+describe("oc-mm exit codes", () => {
   it("prints usage to stdout and exits 0 for --help", async () => {
     const { code, stdout } = await runCli(["--help"]);
     expect(code).toBe(0);
-    expect(stdout).toContain("usage: mm-oc <tool>");
+    expect(stdout).toContain("usage: oc-mm <tool>");
   });
 
   it("prints usage to stderr and exits 1 with no tool", async () => {
     const { code, stderr } = await runCli([]);
     expect(code).toBe(1);
-    expect(stderr).toContain("usage: mm-oc <tool>");
+    expect(stderr).toContain("usage: oc-mm <tool>");
   });
 
   it("exits 1 on an unknown tool", async () => {

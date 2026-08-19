@@ -1,6 +1,6 @@
-# mm-oc-client
+# oc-mm-client
 
-[![CI](https://github.com/Chi-teck/mm-oc-client/actions/workflows/ci.yml/badge.svg)](https://github.com/Chi-teck/mm-oc-client/actions/workflows/ci.yml)
+[![CI](https://github.com/Chi-teck/oc-mm-client/actions/workflows/ci.yml/badge.svg)](https://github.com/Chi-teck/oc-mm-client/actions/workflows/ci.yml)
 
 Mattermost client for [opencode](https://opencode.ai). It gives the agent tools to read and post
 messages, browse channels, search and download attachments, plus a raw REST fallback for the
@@ -16,7 +16,7 @@ Add the package to `opencode.json`; opencode installs it on startup.
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["mm-oc-client"],
+  "plugin": ["oc-mm-client"],
   "permission": {
     "mattermost_create_post": "ask",
     "mattermost_react": "ask",
@@ -48,7 +48,7 @@ export MM_TEAM=my-team
 They can also be passed inline as plugin options, which take precedence over the environment:
 
 ```json
-"plugin": [["mm-oc-client", { "url": "https://mattermost.example.com", "token": "…", "team": "…" }]]
+"plugin": [["oc-mm-client", { "url": "https://mattermost.example.com", "token": "…", "team": "…" }]]
 ```
 
 Missing or rejected credentials are not fatal: the plugin logs the reason and registers no tools.
@@ -128,11 +128,11 @@ bun run lint    # biome check .
 
 A command file under `.opencode/command/` can wrap all three into a single `/check`.
 
-### `mm-oc` CLI
+### `oc-mm` CLI
 
-A testing aid, not a feature of the plugin: the `mm-oc` binary runs the same tool definitions
+A testing aid, not a feature of the plugin: the `oc-mm` binary runs the same tool definitions
 directly — no opencode session, no LLM — so a change can be exercised without restarting the TUI.
-Run it as `bun src/cli.ts …` in a clone, or `bun link` it to get `mm-oc` on `PATH`.
+Run it as `bun src/cli.ts …` in a clone, or `bun link` it to get `oc-mm` on `PATH`.
 
 ```sh
 bun src/cli.ts --help

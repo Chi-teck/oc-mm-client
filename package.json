@@ -1,11 +1,11 @@
 {
-  "name": "mm-oc-client",
+  "name": "oc-mm-client",
   "version": "0.1.0",
   "description": "Mattermost client plugin for opencode",
   "type": "module",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Chi-teck/mm-oc-client.git"
+    "url": "git+https://github.com/Chi-teck/oc-mm-client.git"
   },
   "engines": {
     "bun": ">=1.0.0"
@@ -15,7 +15,7 @@
     "./cli": "./src/cli.ts"
   },
   "bin": {
-    "mm-oc": "./src/cli.ts"
+    "oc-mm": "./src/cli.ts"
   },
   "files": [
     "src",

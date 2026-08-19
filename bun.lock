@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "mm-oc-client",
+      "name": "oc-mm-client",
       "dependencies": {
         "@mattermost/client": "11.9.0",
         "@mattermost/types": "11.9.0",
