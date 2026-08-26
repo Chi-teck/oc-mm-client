@@ -207,16 +207,9 @@ export function createMattermostContext(
     return known;
   }
 
-  async function fileInfos(posts: Post[]): Promise<Map<string, FileInfo[]>> {
-    const entries = await Promise.all(
-      posts
-        .filter((post) => post.file_ids?.length)
-        .map(
-          async (post) =>
-            [post.id, await client.getFileInfosForPost(post.id).catch(() => [])] as const,
-        ),
-    );
-    return new Map(entries);
+  /** Attachments straight from the post metadata the server already sent — no extra requests. */
+  function fileInfos(posts: Post[]): Map<string, FileInfo[]> {
+    return new Map(posts.map((post) => [post.id, post.metadata?.files ?? []]));
   }
 
   async function formatPosts(list: PostList, options: FormatOptions = {}): Promise<string> {
@@ -230,10 +223,10 @@ export function createMattermostContext(
       .sort((a, b) => a.create_at - b.create_at);
     if (!all.length) return "(no posts)";
     const shown = all.length > limit ? all.slice(all.length - limit) : all;
-    const [names, files] = await Promise.all([
-      usernames(shown.map((post) => post.user_id)).catch(() => new Map<string, string>()),
-      fileInfos(shown),
-    ]);
+    const names = await usernames(shown.map((post) => post.user_id)).catch(
+      () => new Map<string, string>(),
+    );
+    const files = fileInfos(shown);
     const lines: string[] = [];
     for (const post of shown) {
       const who = names.get(post.user_id) ?? post.user_id;
@@ -244,11 +237,17 @@ export function createMattermostContext(
       } else {
         lines.push(`**${who}** (${when}): ${body}`);
       }
-      for (const info of files.get(post.id) ?? []) {
+      const infos = files.get(post.id) ?? [];
+      for (const info of infos) {
         lines.push(
           `  [file] ${info.name} (${info.mime_type}, ${humanSize(info.size)}, id: ${info.id})`,
         );
       }
+      // The server can withhold metadata for an attachment it still lists in `file_ids`. Say so
+      // rather than rendering the post as if it had none. Measured against 11.0.4: only deleted
+      // posts do this, and the filter above has already dropped those.
+      const missing = (post.file_ids?.length ?? 0) - infos.length;
+      if (missing > 0) lines.push(`  [file] (${missing} unavailable — server sent no metadata)`);
       const reactions = reactionSummary(post);
       if (reactions) lines.push(`  [reactions] ${reactions}`);
     }

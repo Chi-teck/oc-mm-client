@@ -6,6 +6,7 @@ import {
   DEFAULT_LIMIT_BEFORE,
 } from "@mattermost/client";
 import type { ChannelMembership, ServerChannel } from "@mattermost/types/channels";
+import type { FileInfo } from "@mattermost/types/files";
 import type { PaginatedPostList, Post, PostList } from "@mattermost/types/posts";
 import type { Reaction } from "@mattermost/types/reactions";
 import type { ToolContext } from "@opencode-ai/plugin";
@@ -53,6 +54,16 @@ function post(overrides: Partial<Post> = {}): Post {
     metadata: { embeds: [], emojis: [], files: [], images: {} },
     ...overrides,
   };
+}
+
+function fileInfo(overrides: Partial<FileInfo> = {}): FileInfo {
+  return {
+    id: "ffffffffffffffffffffffff01",
+    name: "report.pdf",
+    mime_type: "application/pdf",
+    size: 4300,
+    ...overrides,
+  } as FileInfo;
 }
 
 /** A root post plus `n` replies, created oldest-first so `create_at` orders them. */
@@ -310,17 +321,6 @@ function mockClient(state: Partial<MockState> = {}): Client4 & { state: MockStat
       rec("getProfilesByIds", userIds);
       return userIds.includes(ME_ID) ? [{ id: ME_ID, username: "mmbot" }] : [];
     },
-    getFileInfosForPost: async (postId: string) => {
-      rec("getFileInfosForPost", postId);
-      return [
-        {
-          id: "ffffffffffffffffffffffff01",
-          name: "report.pdf",
-          mime_type: "application/pdf",
-          size: 4300,
-        },
-      ];
-    },
     state: s,
   } as unknown as Client4 & { state: MockState };
 }
@@ -502,9 +502,13 @@ describe("mattermost_read_posts", () => {
   it("formats posts with username, file metadata and reply threads", async () => {
     const root = post({ message: "root post" });
     const reply = post({ message: "a reply", root_id: root.id });
-    const withFile = post({ message: "see attach", file_ids: ["ffffffffffffffffffffffff01"] });
+    const withFile = post({
+      message: "see attach",
+      file_ids: ["ffffffffffffffffffffffff01"],
+      metadata: { embeds: [], emojis: [], files: [fileInfo()], images: {} },
+    });
     const client = mockClient({ posts: [root, reply, withFile] });
-    const { readPosts } = makeTools(client);
+    const { readPosts, calls } = makeTools(client);
     const result = await readPosts({ channel: "my-channel" }, toolCtx);
     const output = typeof result === "string" ? result : result.output;
     expect(output).toContain("**mmbot** (");
@@ -514,6 +518,50 @@ describe("mattermost_read_posts", () => {
     expect(output).toContain(
       "  [file] report.pdf (application/pdf, 4.2 KB, id: ffffffffffffffffffffffff01)",
     );
+    expect(calls.getFileInfosForPost).toBeUndefined();
+  });
+
+  it("takes attachments from post metadata without a per-post file lookup", async () => {
+    const withFile = post({
+      message: "see attach",
+      file_ids: ["ffffffffffffffffffffffff01"],
+      metadata: { embeds: [], emojis: [], files: [fileInfo()], images: {} },
+    });
+    const client = mockClient({ posts: [withFile] });
+    const { readPosts, calls } = makeTools(client);
+    const result = await readPosts({ channel: "my-channel" }, toolCtx);
+    const output = typeof result === "string" ? result : result.output;
+    expect(output).toContain(
+      "  [file] report.pdf (application/pdf, 4.2 KB, id: ffffffffffffffffffffffff01)",
+    );
+    expect(calls.getFileInfosForPost).toBeUndefined();
+  });
+
+  it("flags attachments the server withheld instead of dropping them", async () => {
+    const partial = post({
+      message: "two files",
+      file_ids: ["ffffffffffffffffffffffff01", "ffffffffffffffffffffffff02"],
+      metadata: { embeds: [], emojis: [], files: [fileInfo()], images: {} },
+    });
+    const client = mockClient({ posts: [partial] });
+    const { readPosts } = makeTools(client);
+    const result = await readPosts({ channel: "my-channel" }, toolCtx);
+    const output = typeof result === "string" ? result : result.output;
+    expect(output).toContain(
+      "  [file] report.pdf (application/pdf, 4.2 KB, id: ffffffffffffffffffffffff01)",
+    );
+    expect(output).toContain("  [file] (1 unavailable — server sent no metadata)");
+  });
+
+  it("flags every attachment when the post carries no file metadata", async () => {
+    const bare = post({ message: "no metadata", file_ids: ["ffffffffffffffffffffffff01"] });
+    const client = mockClient({ posts: [bare] });
+    const { readPosts, calls } = makeTools(client);
+    const result = await readPosts({ channel: "my-channel" }, toolCtx);
+    const output = typeof result === "string" ? result : result.output;
+    expect(output).toContain("  [file] (1 unavailable — server sent no metadata)");
+    expect(output).not.toContain("report.pdf");
+    expect(calls.getFileInfosForPost).toBeUndefined();
   });
 
   it("shows reactions grouped by emoji", async () => {
