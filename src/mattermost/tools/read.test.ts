@@ -1,7 +1,12 @@
 import { describe, expect, it } from "bun:test";
-import { type Client4, ClientError } from "@mattermost/client";
+import {
+  type Client4,
+  ClientError,
+  DEFAULT_LIMIT_AFTER,
+  DEFAULT_LIMIT_BEFORE,
+} from "@mattermost/client";
 import type { ChannelMembership, ServerChannel } from "@mattermost/types/channels";
-import type { Post, PostList } from "@mattermost/types/posts";
+import type { PaginatedPostList, Post, PostList } from "@mattermost/types/posts";
 import type { Reaction } from "@mattermost/types/reactions";
 import type { ToolContext } from "@opencode-ai/plugin";
 import { createMattermostContext } from "../context.js";
@@ -70,9 +75,64 @@ function postList(posts: Post[]): PostList {
   };
 }
 
+// `Client4` fills these in when the caller leaves the argument out (client4.js:26-28, 1277, 1282),
+// so the mock has to apply them itself to page the way the real client does.
+const PER_PAGE_DEFAULT = 60;
+// The server clamps `per_page` no matter what the client asks for: 201, 240 and 1000 all come back
+// as 200 items (Mattermost 11.0.4).
+const MAX_PER_PAGE = 200;
+
+/** The channel timeline the mock pages over: oldest first, the way `create_at` orders it. */
+function timeline(posts: Post[]): Post[] {
+  return [...posts].sort((a, b) => a.create_at - b.create_at);
+}
+
+/**
+ * One page of a channel, the way the server cuts it. `all` is the whole channel oldest-first and
+ * `until` the exclusive index of the newest post the query may return — `all.length` for
+ * `getPosts`, the pivot's index for `getPostsBefore`. `prev_post_id` names the post just older than
+ * the window and `next_post_id` the one just newer, each empty when the window reaches that end.
+ */
+function channelPage(all: Post[], page: number, perPage: number, until: number): PostList {
+  const size = Math.min(perPage, MAX_PER_PAGE);
+  const end = Math.max(0, until - page * size);
+  const start = Math.max(0, end - size);
+  return {
+    ...postList(all.slice(start, end)),
+    prev_post_id: start > 0 ? (all[start - 1]?.id ?? "") : "",
+    next_post_id: end < all.length ? (all[end]?.id ?? "") : "",
+  };
+}
+
+/**
+ * One page of a thread. `perPage` counts replies — the root always comes back on top — and
+ * `direction: "up"` keeps the newest replies, `"down"` the oldest. `has_next` says whether any
+ * reply was left behind, and the root reports the true `reply_count`.
+ */
+function threadPage(
+  posts: Post[],
+  rootId: string,
+  perPage: number,
+  direction: "up" | "down",
+): PaginatedPostList {
+  const root = posts.find((p) => p.id === rootId);
+  if (!root) return { ...postList([]), has_next: false };
+  const replies = timeline(posts.filter((p) => p.root_id === rootId));
+  const kept =
+    direction === "up"
+      ? replies.slice(Math.max(0, replies.length - perPage))
+      : replies.slice(0, perPage);
+  return {
+    ...postList([{ ...root, reply_count: replies.length }, ...kept]),
+    has_next: kept.length < replies.length,
+  };
+}
+
 interface MockState {
   calls: Record<string, unknown[]>;
   posts: Post[];
+  /** How many of the oldest `posts` this member has already read; the rest are unread. */
+  read: number;
 }
 
 const MEMBERSHIPS = [
@@ -97,7 +157,7 @@ const MEMBERSHIPS = [
 ] as ChannelMembership[];
 
 function mockClient(state: Partial<MockState> = {}): Client4 & { state: MockState } {
-  const s: MockState = { calls: {}, posts: [], ...state };
+  const s: MockState = { calls: {}, posts: [], read: 0, ...state };
   const rec = (name: string, ...args: unknown[]) => {
     if (!s.calls[name]) s.calls[name] = [];
     s.calls[name].push(args);
@@ -175,7 +235,8 @@ function mockClient(state: Partial<MockState> = {}): Client4 & { state: MockStat
     },
     getPosts: async (channelId: string, page?: number, perPage?: number) => {
       rec("getPosts", channelId, page, perPage);
-      return postList(s.posts);
+      const all = timeline(s.posts);
+      return channelPage(all, page ?? 0, perPage ?? PER_PAGE_DEFAULT, all.length);
     },
     getPostsSince: async (channelId: string, since: number) => {
       rec("getPostsSince", channelId, since);
@@ -183,8 +244,11 @@ function mockClient(state: Partial<MockState> = {}): Client4 & { state: MockStat
     },
     getPostsBefore: async (channelId: string, postId: string, page?: number, perPage?: number) => {
       rec("getPostsBefore", channelId, postId, page, perPage);
-      const pivot = s.posts.find((p) => p.id === postId);
-      return postList(pivot ? s.posts.filter((p) => p.create_at < pivot.create_at) : s.posts);
+      const all = timeline(s.posts);
+      // An unknown pivot leaves the whole channel "before" it, as this mock has always assumed.
+      const pivot = all.findIndex((p) => p.id === postId);
+      const until = pivot < 0 ? all.length : pivot;
+      return channelPage(all, page ?? 0, perPage ?? PER_PAGE_DEFAULT, until);
     },
     getPost: async (postId: string) => {
       rec("getPost", postId);
@@ -200,15 +264,39 @@ function mockClient(state: Partial<MockState> = {}): Client4 & { state: MockStat
     },
     getPostThread: async (postId: string) => {
       rec("getPostThread", postId);
-      return { ...postList(s.posts), has_next: false };
+      // Client4 forwards to the paginated endpoint with its own defaults (client4.js:1270-1272).
+      return threadPage(s.posts, postId, PER_PAGE_DEFAULT, "down");
+    },
+    getPaginatedPostThread: async (
+      postId: string,
+      options: { perPage?: number; direction?: "up" | "down" } = {},
+    ) => {
+      rec("getPaginatedPostThread", postId, options);
+      const { perPage = PER_PAGE_DEFAULT, direction = "down" } = options;
+      return threadPage(s.posts, postId, perPage, direction);
     },
     getPinnedPosts: async (channelId: string) => {
       rec("getPinnedPosts", channelId);
       return postList(s.posts.filter((p) => p.is_pinned));
     },
-    getPostsUnread: async (channelId: string, userId: string, limitAfter?: number) => {
-      rec("getPostsUnread", channelId, userId, limitAfter);
-      return postList(s.posts);
+    getPostsUnread: async (
+      channelId: string,
+      userId: string,
+      limitAfter?: number,
+      limitBefore?: number,
+    ) => {
+      rec("getPostsUnread", channelId, userId, limitAfter, limitBefore);
+      const all = timeline(s.posts);
+      // The server reads outwards from the member's cursor: `limit_before` already-read posts for
+      // context, then `limit_after` unread ones. So `limit_after` keeps the OLDEST unread posts and
+      // `next_post_id` names the next one still on the server.
+      const start = Math.max(0, s.read - (limitBefore ?? DEFAULT_LIMIT_BEFORE));
+      const end = Math.min(all.length, s.read + (limitAfter ?? DEFAULT_LIMIT_AFTER));
+      return {
+        ...postList(all.slice(start, end)),
+        prev_post_id: start > 0 ? (all[start - 1]?.id ?? "") : "",
+        next_post_id: end < all.length ? (all[end]?.id ?? "") : "",
+      };
     },
     getProfilesByIds: async (userIds: string[]) => {
       rec("getProfilesByIds", userIds);
@@ -370,15 +458,19 @@ describe("mattermost_read_posts", () => {
     expect(output).not.toContain("[reactions]");
   });
 
-  it("caps at 30 posts and points at the oldest shown post for paging", async () => {
+  // B2: the tool fetches exactly `limit` posts, so `formatPosts` can never see more than it shows
+  // and the paging hint never fires. The server does say older posts exist — in `prev_post_id`,
+  // which the code discards. Flip this test when the hint is driven off `prev_post_id`.
+  it("shows the newest page and says nothing about the older posts left behind", async () => {
     const posts = Array.from({ length: 35 }, (_, i) => post({ message: `m${i}` }));
     const client = mockClient({ posts });
     const { readPosts } = makeTools(client);
     const result = await readPosts({ channel: "my-channel" }, toolCtx);
     const output = typeof result === "string" ? result : result.output;
-    expect(output).toContain(`(30 posts shown of 35 — pass before=${posts[5]?.id} for older)`);
     expect(output).toContain("m34");
-    expect(output).not.toContain("m0\n");
+    expect(output).not.toContain("m4\n");
+    expect(output).not.toContain("posts shown of");
+    expect((await client.getPosts(CHANNEL_ID, 0, 30)).prev_post_id).toBe(posts[4]?.id ?? "");
   });
 
   it("shows more than 30 posts when limit asks for them", async () => {
@@ -503,7 +595,7 @@ describe("mattermost_read_unread", () => {
     const client = mockClient({ posts: [post({ message: "hello" })] });
     const { readUnread, calls } = makeTools(client);
     const result = await readUnread({ channel: "my-channel" }, toolCtx);
-    expect(calls.getPostsUnread).toEqual([[CHANNEL_ID, ME_ID, undefined]]);
+    expect(calls.getPostsUnread).toEqual([[CHANNEL_ID, ME_ID, undefined, undefined]]);
     const output = typeof result === "string" ? result : result.output;
     expect(output).toContain("my-channel: 2 unread");
     expect(output).toContain("hello");
