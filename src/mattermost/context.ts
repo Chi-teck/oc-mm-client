@@ -223,10 +223,11 @@ export function createMattermostContext(
       if (reactions) lines.push(`  [reactions] ${reactions}`);
     }
     const oldest = shown[0];
-    if (oldest && all.length > shown.length) {
-      lines.push(
-        `(${shown.length} posts shown of ${all.length} — pass before=${oldest.id} for older)`,
-      );
+    // `prev_post_id` is the server's own "older posts exist" flag: set when the page it returned
+    // is not the start of the channel, empty when it is. The length check covers the branches
+    // that fetch without a limit (`pinned`, `since`, unread) and get trimmed for display here.
+    if (oldest && (all.length > shown.length || list.prev_post_id)) {
+      lines.push(`(${shown.length} posts shown — older posts exist, pass before=${oldest.id})`);
     }
     return lines.join("\n");
   }

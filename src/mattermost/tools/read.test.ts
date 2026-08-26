@@ -458,19 +458,46 @@ describe("mattermost_read_posts", () => {
     expect(output).not.toContain("[reactions]");
   });
 
-  // B2: the tool fetches exactly `limit` posts, so `formatPosts` can never see more than it shows
-  // and the paging hint never fires. The server does say older posts exist — in `prev_post_id`,
-  // which the code discards. Flip this test when the hint is driven off `prev_post_id`.
-  it("shows the newest page and says nothing about the older posts left behind", async () => {
+  it("points at the oldest shown post when the server says older posts remain", async () => {
     const posts = Array.from({ length: 35 }, (_, i) => post({ message: `m${i}` }));
+    const client = mockClient({ posts });
+    const { readPosts, calls } = makeTools(client);
+    const result = await readPosts({ channel: "my-channel" }, toolCtx);
+    const output = typeof result === "string" ? result : result.output;
+    expect(calls.getPosts).toEqual([[CHANNEL_ID, 0, 30]]);
+    expect(output).toContain(`(30 posts shown — older posts exist, pass before=${posts[5]?.id})`);
+    expect(output).toContain("m34");
+    expect(output).not.toContain("m0\n");
+  });
+
+  it("says nothing about paging when the channel is exhausted", async () => {
+    const posts = Array.from({ length: 5 }, (_, i) => post({ message: `m${i}` }));
     const client = mockClient({ posts });
     const { readPosts } = makeTools(client);
     const result = await readPosts({ channel: "my-channel" }, toolCtx);
     const output = typeof result === "string" ? result : result.output;
-    expect(output).toContain("m34");
-    expect(output).not.toContain("m4\n");
-    expect(output).not.toContain("posts shown of");
-    expect((await client.getPosts(CHANNEL_ID, 0, 30)).prev_post_id).toBe(posts[4]?.id ?? "");
+    expect(output).toContain("m0");
+    expect(output).not.toContain("pass before=");
+  });
+
+  it("still offers the next page at the maximum limit", async () => {
+    const posts = Array.from({ length: 250 }, (_, i) => post({ message: `m${i}` }));
+    const client = mockClient({ posts });
+    const { readPosts, calls } = makeTools(client);
+    const result = await readPosts({ channel: "my-channel", limit: 200 }, toolCtx);
+    const output = typeof result === "string" ? result : result.output;
+    expect(calls.getPosts).toEqual([[CHANNEL_ID, 0, 200]]);
+    expect(output).toContain(`(200 posts shown — older posts exist, pass before=${posts[50]?.id})`);
+  });
+
+  it("offers the next page when paging backwards leaves more behind", async () => {
+    const posts = Array.from({ length: 40 }, (_, i) => post({ message: `m${i}` }));
+    const pivot = posts[39];
+    const client = mockClient({ posts });
+    const { readPosts } = makeTools(client);
+    const result = await readPosts({ channel: "my-channel", before: pivot?.id }, toolCtx);
+    const output = typeof result === "string" ? result : result.output;
+    expect(output).toContain(`(30 posts shown — older posts exist, pass before=${posts[9]?.id})`);
   });
 
   it("shows more than 30 posts when limit asks for them", async () => {
@@ -481,7 +508,7 @@ describe("mattermost_read_posts", () => {
     expect(calls.getPosts).toEqual([[CHANNEL_ID, 0, 50]]);
     const output = typeof result === "string" ? result : result.output;
     expect(output).toContain("m0\n");
-    expect(output).not.toContain("posts shown of");
+    expect(output).not.toContain("older posts exist");
   });
 
   it("pages backwards with before", async () => {
