@@ -1,4 +1,4 @@
-import type { Client4 } from "@mattermost/client";
+import { type Client4, ClientError } from "@mattermost/client";
 import type { ServerChannel } from "@mattermost/types/channels";
 import type { ClientConfig } from "@mattermost/types/config";
 import type { FileInfo } from "@mattermost/types/files";
@@ -114,7 +114,11 @@ export function createMattermostContext(
   }
 
   function team(): Promise<Team> {
-    teamPromise ??= resolve();
+    // Same promise cache as `me()`, including the reset: a transient failure must not be cached.
+    teamPromise ??= resolve().catch((error: unknown) => {
+      teamPromise = undefined;
+      throw error;
+    });
     return teamPromise;
     async function resolve(): Promise<Team> {
       const ref = config.team;
@@ -122,7 +126,11 @@ export function createMattermostContext(
       if (ID_SHAPE.test(ref)) return { id: ref } as Team;
       try {
         return await client.getTeamByName(ref);
-      } catch {
+      } catch (error) {
+        // Only a 404 means the name is wrong. A 401, a 500 or a connection failure that never
+        // became a `ClientError` is the token, the server or the network — relabelling those as a
+        // missing team sends the reader to a config file that is fine.
+        if (!(error instanceof ClientError) || error.status_code !== 404) throw error;
         throw new Error(`Mattermost team not found: ${ref}`);
       }
     }

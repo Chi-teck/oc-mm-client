@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import type { Client4 } from "@mattermost/client";
+import { type Client4, ClientError } from "@mattermost/client";
 import type { ServerChannel } from "@mattermost/types/channels";
+import type { ServerError } from "@mattermost/types/errors";
 import { createMattermostContext, parseSince, withTimeout } from "./context.js";
 import type { MattermostEnv } from "./env.js";
 
@@ -15,6 +16,15 @@ const channel = (overrides: Partial<ServerChannel> = {}): ServerChannel =>
     ...overrides,
   }) as ServerChannel;
 
+function teamError(data: Partial<ServerError> = {}): ClientError {
+  return new ClientError(config.url, {
+    message: "Unable to find the existing team.",
+    url: `${config.url}/api/v4/teams/name/nope`,
+    status_code: 404,
+    ...data,
+  });
+}
+
 function mockClient(overrides: Record<string, unknown> = {}): Client4 & { calls: string[][] } {
   const calls: string[][] = [];
   const base: Record<string, unknown> = {
@@ -25,7 +35,7 @@ function mockClient(overrides: Record<string, unknown> = {}): Client4 & { calls:
     getTeamByName: async (name: string) => {
       calls.push(["getTeamByName", name]);
       if (name === "my-team") return { id: "tttttttttttttttttttttttttt", name };
-      throw new Error("not found");
+      throw teamError();
     },
     getChannel: async (id: string) => {
       calls.push(["getChannel", id]);
@@ -118,6 +128,43 @@ describe("createMattermostContext", () => {
   it("throws on unknown team name", async () => {
     const ctx = createMattermostContext({ ...config, team: "nope" }, mockClient());
     await expect(ctx.team()).rejects.toThrow("Mattermost team not found: nope");
+  });
+
+  it("does not cache a failed team lookup", async () => {
+    let attempts = 0;
+    const client = mockClient({
+      getTeamByName: async (name: string) => {
+        attempts++;
+        if (attempts === 1) throw new TypeError("fetch failed");
+        return { id: "tttttttttttttttttttttttttt", name };
+      },
+    });
+    const ctx = createMattermostContext(config, client);
+    await expect(ctx.team()).rejects.toThrow("fetch failed");
+    expect((await ctx.team()).id).toBe("tttttttttttttttttttttttttt");
+    expect(attempts).toBe(2);
+  });
+
+  it("lets a non-404 team failure through so the registry can restate it", async () => {
+    const client = mockClient({
+      getTeamByName: async () => {
+        throw teamError({ message: "Internal server error", status_code: 500 });
+      },
+    });
+    const ctx = createMattermostContext(config, client);
+    await expect(ctx.team()).rejects.toThrow("Internal server error");
+    // Still a ClientError, so `describeClientError` can add the status and the endpoint.
+    await expect(ctx.team()).rejects.toBeInstanceOf(ClientError);
+  });
+
+  it("does not blame the team name for a connection failure", async () => {
+    const client = mockClient({
+      getTeamByName: async () => {
+        throw new TypeError("fetch failed");
+      },
+    });
+    const ctx = createMattermostContext(config, client);
+    await expect(ctx.team()).rejects.toThrow("fetch failed");
   });
 
   it("resolves channel by 26-char id via getChannel", async () => {
