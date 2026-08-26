@@ -32,7 +32,7 @@ describe("readMattermostEnv", () => {
 });
 
 describe("loadEnvFile", () => {
-  it("loads keys without overwriting existing env", async () => {
+  it("parses comments, quotes and blank lines", async () => {
     const path = "local/tmp/.env.local.test";
     await Bun.write(
       path,
@@ -44,16 +44,39 @@ describe("loadEnvFile", () => {
         "not-an-assignment",
       ].join("\n"),
     );
-    const prev = process.env.MM_TOKEN;
-    process.env.MM_TOKEN = "shell-tok";
     try {
-      loadEnvFile(path);
-      expect(process.env.MM_URL).toBe("https://file.example.com");
-      expect(process.env.MM_TOKEN).toBe("shell-tok");
+      expect(loadEnvFile(path)).toEqual({
+        MM_URL: "https://file.example.com",
+        MM_TOKEN: "file-tok",
+      });
     } finally {
-      delete process.env.MM_URL;
-      if (prev === undefined) delete process.env.MM_TOKEN;
-      else process.env.MM_TOKEN = prev;
+      await Bun.write(path, "");
+    }
+  });
+
+  it("keeps the file's keys out of process.env", async () => {
+    const path = "local/tmp/.env.local.leak";
+    await Bun.write(path, "MM_TOKEN=file-tok");
+    const had = "MM_TOKEN" in process.env;
+    try {
+      expect(loadEnvFile(path)).toEqual({ MM_TOKEN: "file-tok" });
+      // Compared against the file's value, never against the real one: a failed `toBe` prints it.
+      expect(process.env.MM_TOKEN).not.toBe("file-tok");
+      expect("MM_TOKEN" in process.env).toBe(had);
+    } finally {
+      await Bun.write(path, "");
+    }
+  });
+
+  it("loses to the real environment for keys it already defines", async () => {
+    const path = "local/tmp/.env.local.precedence";
+    await Bun.write(path, ["MM_URL=https://file.example.com", 'MM_TOKEN="file-tok"'].join("\n"));
+    const shellEnv = { MM_TOKEN: "shell-tok" };
+    try {
+      // The composition both entry points use: file first, real environment last.
+      const merged: Record<string, string> = { ...loadEnvFile(path), ...shellEnv };
+      expect(merged).toEqual({ MM_URL: "https://file.example.com", MM_TOKEN: "shell-tok" });
+    } finally {
       await Bun.write(path, "");
     }
   });
@@ -61,22 +84,14 @@ describe("loadEnvFile", () => {
   it("ignores keys outside the MM_ namespace", async () => {
     const path = "local/tmp/.env.local.foreign";
     await Bun.write(path, ["AWS_SECRET_ACCESS_KEY=leak", "MM_TEAM=from-file"].join("\n"));
-    const env = process.env as Record<string, string | undefined>;
-    const prev = env.MM_TEAM;
-    delete env.MM_TEAM;
     try {
-      loadEnvFile(path);
-      const after = { ...env };
-      expect(after.AWS_SECRET_ACCESS_KEY).toBeUndefined();
-      expect(after.MM_TEAM).toBe("from-file");
+      expect(loadEnvFile(path)).toEqual({ MM_TEAM: "from-file" });
     } finally {
-      if (prev === undefined) delete env.MM_TEAM;
-      else env.MM_TEAM = prev;
       await Bun.write(path, "");
     }
   });
 
   it("silently skips missing files", () => {
-    loadEnvFile("local/tmp/definitely-missing.env");
+    expect(loadEnvFile("local/tmp/definitely-missing.env")).toEqual({});
   });
 });

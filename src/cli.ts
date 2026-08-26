@@ -134,8 +134,8 @@ export async function main(argv: string[]): Promise<number> {
     return 1;
   }
 
-  loadEnvFile();
-  const tools = createTools(createMattermostContext(readMattermostEnv()));
+  const env = readMattermostEnv({ ...loadEnvFile(), ...process.env });
+  const tools = createTools(createMattermostContext(env));
   const def = resolveTool(tools, name);
   if (!def) {
     console.error(`unknown tool: ${name}\n\n${usage(tools)}`);

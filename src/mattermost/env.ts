@@ -17,16 +17,19 @@ export function readMattermostEnv(env = process.env): MattermostEnv {
 }
 
 /**
- * Loads `MM_*` keys from a dotenv-style file into `process.env`. A missing or unreadable file is
- * not an error, and variables already set in the real environment are left untouched.
+ * Reads `MM_*` keys from a dotenv-style file and returns them. A missing or unreadable file is not
+ * an error — it yields an empty object. Nothing is written to `process.env`: the token would then
+ * be inherited by every process opencode spawns. Callers merge the result under the real
+ * environment, which stays authoritative for the keys it defines.
  */
-export function loadEnvFile(path = ".env.local"): void {
+export function loadEnvFile(path = ".env.local"): Record<string, string> {
   let file: string;
   try {
     file = readFileSync(path, "utf8");
   } catch {
-    return;
+    return {};
   }
+  const values: Record<string, string> = {};
   for (const line of file.split("\n")) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#")) continue;
@@ -41,6 +44,7 @@ export function loadEnvFile(path = ".env.local"): void {
     ) {
       value = value.slice(1, -1);
     }
-    if (!(key in process.env)) process.env[key] = value;
+    if (!(key in values)) values[key] = value;
   }
+  return values;
 }

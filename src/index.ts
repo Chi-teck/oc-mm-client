@@ -15,10 +15,10 @@ function strOption(options: PluginOptions | undefined, key: string): string | un
 export default (async (input, options) => {
   // Anchored to the project directory, not the process cwd: `opencode run --dir=<project>` leaves
   // the cwd wherever it was launched, and a relative path would miss the project's `.env.local`.
-  loadEnvFile(join(input.directory, ".env.local"));
+  const fileEnv = loadEnvFile(join(input.directory, ".env.local"));
   let env: MattermostEnv | undefined;
   try {
-    env = readMattermostEnv();
+    env = readMattermostEnv({ ...fileEnv, ...process.env });
   } catch {
     // Incomplete env is not fatal here: plugin options can supply what is missing.
     env = undefined;

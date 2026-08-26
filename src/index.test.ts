@@ -104,6 +104,27 @@ describe("plugin entry", () => {
     try {
       const hooks = await plugin({ directory: project } as PluginInput, undefined);
       expect(Object.keys(hooks.tool ?? {})).toHaveLength(13);
+      // The file's credentials stay out of the environment opencode hands to spawned processes.
+      for (const key of MM_KEYS) expect(process.env[key]).toBeUndefined();
+    } finally {
+      for (const key of MM_KEYS) delete process.env[key];
+      await rm(project, { recursive: true, force: true });
+      server.stop();
+    }
+  });
+
+  it("lets the real environment win over .env.local", async () => {
+    const server = startMockMattermost();
+    const project = await mkdtemp(join(tmpdir(), "oc-mm-project-"));
+    await Bun.write(
+      join(project, ".env.local"),
+      [`MM_URL=${server.url}`, "MM_TOKEN=tok", "MM_TEAM=from-file"].join("\n"),
+    );
+    process.env.MM_TEAM = "my-team";
+    try {
+      const hooks = await plugin({ directory: project } as PluginInput, undefined);
+      expect(Object.keys(hooks.tool ?? {})).toHaveLength(13);
+      expect(server.paths).toContain("/api/v4/teams/name/my-team");
     } finally {
       for (const key of MM_KEYS) delete process.env[key];
       await rm(project, { recursive: true, force: true });
