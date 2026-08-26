@@ -1,7 +1,7 @@
 import { ClientError } from "@mattermost/client";
 import type { Post, PostList } from "@mattermost/types/posts";
 import { tool } from "@opencode-ai/plugin";
-import type { MattermostContext } from "../context.js";
+import { type MattermostContext, unreadCount } from "../context.js";
 
 // `last_viewed_at === 0` means the channel was never opened, so its whole history reads as unread.
 const FIRST_RUN_NOTE = "first run: full history unread, consider mark_read bootstrap";
@@ -155,8 +155,7 @@ export function readUnreadTool(ctx: MattermostContext) {
         for (const membership of memberships) {
           const ch = byId.get(membership.channel_id);
           if (!ch) continue;
-          // Mattermost reports no unread count: it is the channel total minus what this member read.
-          const unread = ch.total_msg_count - membership.msg_count;
+          const unread = unreadCount(ch.total_msg_count, membership.msg_count);
           const mentions = membership.mention_count;
           if (unread <= 0 && mentions <= 0) continue;
           if (membership.last_viewed_at === 0) firstRun = true;
@@ -173,8 +172,9 @@ export function readUnreadTool(ctx: MattermostContext) {
         ctx.client.getChannel(resolved.id),
         ctx.client.getChannelMember(resolved.id, "me"),
       ]);
-      const unread = totals.total_msg_count - membership.msg_count;
-      if (unread <= 0) {
+      const unread = unreadCount(totals.total_msg_count, membership.msg_count);
+      const mentions = membership.mention_count;
+      if (unread <= 0 && mentions <= 0) {
         return {
           title: `Mattermost: unread in ${resolved.name}`,
           output: `No unread messages in ${resolved.name}.`,

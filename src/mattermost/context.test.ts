@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { type Client4, ClientError } from "@mattermost/client";
 import type { ServerChannel } from "@mattermost/types/channels";
 import type { ServerError } from "@mattermost/types/errors";
-import { createMattermostContext, parseSince, withTimeout } from "./context.js";
+import { createMattermostContext, parseSince, unreadCount, withTimeout } from "./context.js";
 import type { MattermostEnv } from "./env.js";
 
 const config: MattermostEnv = { url: "https://mm.example.com", token: "tok", team: "my-team" };
@@ -86,6 +86,20 @@ describe("parseSince", () => {
   it("throws on garbage", () => {
     expect(() => parseSince("soon", now)).toThrow("Invalid since");
     expect(() => parseSince("", now)).toThrow("Invalid since");
+  });
+});
+
+describe("unreadCount", () => {
+  it("clamps a skewed counter to zero", () => {
+    expect(unreadCount(10, 13)).toBe(0);
+  });
+
+  it("is zero when the member has read everything", () => {
+    expect(unreadCount(10, 10)).toBe(0);
+  });
+
+  it("is the difference when posts are unread", () => {
+    expect(unreadCount(10, 8)).toBe(2);
   });
 });
 

@@ -798,4 +798,39 @@ describe("mattermost_read_unread", () => {
     const output = typeof result === "string" ? result : result.output;
     expect(output).toBe("No unread messages.");
   });
+
+  it("clamps a skewed counter instead of printing a negative unread count", async () => {
+    const base = mockClient();
+    const client = {
+      ...base,
+      // 13 read out of a total of 10 — the skew that used to print "-3 unread".
+      getMyChannelMembers: async () =>
+        [
+          { channel_id: CHANNEL_ID, msg_count: 13, mention_count: 2, last_viewed_at: 1 },
+        ] as ChannelMembership[],
+    } as unknown as Client4 & { state: MockState };
+    const ctx = createMattermostContext(config, client);
+    const result = await readUnreadTool(ctx).execute({}, toolCtx);
+    const output = typeof result === "string" ? result : result.output;
+    expect(output).toBe("my-channel: 0 unread, 2 mentions");
+  });
+
+  it("still shows one channel's unread mentions when its counter says nothing is unread", async () => {
+    const base = mockClient({ posts: [post({ message: "you were mentioned" })] });
+    const client = {
+      ...base,
+      getChannelMember: async () =>
+        ({
+          channel_id: CHANNEL_ID,
+          msg_count: 13,
+          mention_count: 2,
+          last_viewed_at: 1,
+        }) as ChannelMembership,
+    } as unknown as Client4 & { state: MockState };
+    const ctx = createMattermostContext(config, client);
+    const result = await readUnreadTool(ctx).execute({ channel: "my-channel" }, toolCtx);
+    const output = typeof result === "string" ? result : result.output;
+    expect(output).toContain("my-channel: 0 unread —");
+    expect(output).toContain("you were mentioned");
+  });
 });

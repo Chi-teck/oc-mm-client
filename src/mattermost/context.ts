@@ -84,6 +84,15 @@ export function truncate(body: string, hint: string, max = MAX_BODY): string {
   return `${body.slice(0, max)}\n**[truncated at ${max} chars — ${hint}]**`;
 }
 
+/**
+ * Unread posts for one member. Mattermost reports no unread count: it is the channel total minus
+ * what the member has read. Clamped, because a retention purge, a channel type conversion or CRT
+ * root-count skew can leave `read` above `total`, and a negative unread count is nonsense.
+ */
+export function unreadCount(total: number, read: number): number {
+  return Math.max(0, total - read);
+}
+
 export function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const expiry = new Promise<never>((_, reject) => {

@@ -1,6 +1,6 @@
 import { basename, resolve } from "node:path";
 import { tool } from "@opencode-ai/plugin";
-import { humanSize, type MattermostContext } from "../context.js";
+import { humanSize, type MattermostContext, unreadCount } from "../context.js";
 import { confirmWrite } from "./confirm.js";
 import { describeClientError } from "./registry.js";
 
@@ -163,7 +163,7 @@ export function markReadTool(ctx: MattermostContext) {
         ctx.client.getChannel(resolved.id),
         ctx.client.getChannelMember(resolved.id, "me"),
       ]);
-      const unread = Math.max(0, totals.total_msg_count - membership.msg_count);
+      const unread = unreadCount(totals.total_msg_count, membership.msg_count);
       const mentions = membership.mention_count;
       if (unread === 0 && mentions === 0) {
         return {
