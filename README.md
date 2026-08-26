@@ -6,17 +6,18 @@ Mattermost client for [opencode](https://opencode.ai). It gives the agent tools 
 messages, browse channels, search and download attachments, plus a raw REST fallback for the
 endpoints those do not cover.
 
-Requirements: [Bun](https://bun.sh) 1.0+, opencode 1.18+, and a Mattermost
+Requirements: [Bun](https://bun.sh) 1.0+, opencode 1.18+, `git` on the machine, and a Mattermost
 [personal access token](https://developers.mattermost.com/integrate/reference/personal-access-token/).
 
 ## Install
 
-Add the package to `opencode.json`; opencode installs it on startup.
+The plugin is not on npm. Point `opencode.json` at the git repository; opencode installs it on
+startup.
 
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["oc-mm-client"],
+  "plugin": ["github:Chi-teck/oc-mm-client#v0.2.0"],
   "permission": {
     "mattermost_create_post": "ask",
     "mattermost_react": "ask",
@@ -26,6 +27,11 @@ Add the package to `opencode.json`; opencode installs it on startup.
   }
 }
 ```
+
+The `#v0.2.0` tag is deliberate. A bare `github:Chi-teck/oc-mm-client` tracks the default branch,
+so an unrelated push changes the code under a running install. opencode caches by the literal spec
+string, so bumping the tag is also what triggers a re-download — upgrading is a one-line edit, with
+no cache to clear.
 
 Do not skip the `permission` block. The write tools raise a permission request, but with no
 matching rule opencode's default allow-all approves it silently. The plugin has no channel or
@@ -48,7 +54,9 @@ export OC_MM_TEAM=my-team
 They can also be passed inline as plugin options, which take precedence over the environment:
 
 ```json
-"plugin": [["oc-mm-client", { "url": "https://mattermost.example.com", "token": "…", "team": "…" }]]
+"plugin": [
+  ["github:Chi-teck/oc-mm-client#v0.2.0", { "url": "https://mattermost.example.com", "token": "…", "team": "…" }]
+]
 ```
 
 Missing or rejected credentials are not fatal: the plugin logs the reason and registers no tools.
@@ -104,7 +112,7 @@ cp .env.example .env.local
 
 Set `OC_MM_URL`, `OC_MM_TOKEN` and `OC_MM_TEAM` there; real environment variables take precedence over the
 file. `.opencode/` is not tracked, so create `.opencode/opencode.json` yourself — it registers the
-working tree as a plugin instead of the published package, and marks the write tools as `ask`:
+working tree as a plugin instead of the git spec, and marks the write tools as `ask`:
 
 ```json
 {
