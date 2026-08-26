@@ -9,6 +9,8 @@ import { confirmWrite } from "./confirm.js";
 const MAX_HITS = 30;
 const PROFILE_PAGE = 200;
 const MAX_PROFILES = 1000;
+// Same cut as the body in `write.ts`'s create_post summary; `api.ts` uses 200 for JSON payloads.
+const MAX_CONFIRM = 120;
 const SEARCH_HINT = "read it with mattermost_read_posts full=true";
 
 function displayName(profile: UserProfile): string {
@@ -48,6 +50,35 @@ async function channelProfiles(
   return { profiles, complete: false };
 }
 
+/**
+ * One line, cut short. Unlike `write.ts` and `api.ts`, this summary carries two bodies plus a
+ * channel, so a raw newline makes it ambiguous which text is which — and the current body is
+ * server content the model did not author, which `src/cli.ts:119` prints verbatim to stderr.
+ */
+function forConfirm(body: string): string {
+  return body.replace(/\s+/g, " ").trim().slice(0, MAX_CONFIRM);
+}
+
+/**
+ * What the prompt says about the post being changed: a 26-char id tells nobody which of their own
+ * posts is about to be rewritten or destroyed. Best effort — this is the read `mattermost_get_post`
+ * already performs with no prompt at all, so it discloses nothing new, and a post that cannot be
+ * read is no reason to refuse: the real call reports that failure itself, and `delete` deliberately
+ * treats a missing post as already done.
+ */
+async function describePost(ctx: MattermostContext, postId: string): Promise<string> {
+  try {
+    const post = await ctx.client.getPost(postId);
+    const name = await ctx
+      .resolveChannel(post.channel_id)
+      .then((channel) => channel.name)
+      .catch(() => post.channel_id);
+    return ` in ${name}: ${forConfirm(post.message)}`;
+  } catch {
+    return "";
+  }
+}
+
 export function editPostTool(ctx: MattermostContext) {
   return tool({
     description: "Edit or delete one of the bot's own Mattermost posts.",
@@ -57,12 +88,26 @@ export function editPostTool(ctx: MattermostContext) {
       message: tool.schema.string().optional().describe("New message text (required for edit)"),
     },
     execute: async ({ post_id: postId, action, message }, tctx) => {
-      await confirmWrite(tctx, "mattermost_edit_post", `mattermost_edit_post ${action} ${postId}`);
       if (action === "edit") {
+        // Check before asking, the way create_post does (write.ts:48-50): a call that cannot run
+        // should raise neither a request nor a prompt.
         if (message === undefined) throw new Error("edit requires a message");
+        const target = await describePost(ctx, postId);
+        // Spell out the target and the replacement: approving this is approving that exact rewrite.
+        await confirmWrite(
+          tctx,
+          "mattermost_edit_post",
+          `mattermost_edit_post edit ${postId}${target} → ${forConfirm(message)}`,
+        );
         await ctx.client.patchPost({ id: postId, message });
         return { title: "Mattermost: edited post", output: `Edited post ${postId}` };
       }
+      const target = await describePost(ctx, postId);
+      await confirmWrite(
+        tctx,
+        "mattermost_edit_post",
+        `mattermost_edit_post delete ${postId}${target}`,
+      );
       try {
         await ctx.client.deletePost(postId);
       } catch (error) {

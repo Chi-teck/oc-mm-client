@@ -25,6 +25,33 @@ const toolCtx = (onAsk?: (input: unknown) => Promise<void>) =>
     ask: onAsk ?? (async () => {}),
   }) as ToolContext;
 
+function recordingCtx() {
+  const asks: unknown[] = [];
+  return { asks, tctx: toolCtx(async (input) => void asks.push(input)) };
+}
+
+const post = (id: string, message: string, overrides: Partial<Post> = {}): Post =>
+  ({
+    id,
+    create_at: Date.now() - 3_600_000,
+    update_at: 0,
+    edit_at: 0,
+    delete_at: 0,
+    is_pinned: false,
+    user_id: ALICE_ID,
+    channel_id: CHANNEL_ID,
+    root_id: "",
+    original_id: "",
+    message,
+    type: "",
+    props: {},
+    hashtags: "",
+    pending_post_id: "",
+    reply_count: 0,
+    metadata: { embeds: [], emojis: [], files: [], images: {} },
+    ...overrides,
+  }) as Post;
+
 interface MockState {
   calls: Record<string, unknown[][]>;
 }
@@ -37,27 +64,6 @@ function mockClient(state: Partial<MockState> = {}): Client4 & { state: MockStat
   };
   const channel = (id = CHANNEL_ID, name = "my-channel"): ServerChannel =>
     ({ id, name, display_name: name, type: "P" }) as ServerChannel;
-  const post = (id: string, message: string, overrides: Partial<Post> = {}): Post =>
-    ({
-      id,
-      create_at: Date.now() - 3_600_000,
-      update_at: 0,
-      edit_at: 0,
-      delete_at: 0,
-      is_pinned: false,
-      user_id: ALICE_ID,
-      channel_id: CHANNEL_ID,
-      root_id: "",
-      original_id: "",
-      message,
-      type: "",
-      props: {},
-      hashtags: "",
-      pending_post_id: "",
-      reply_count: 0,
-      metadata: { embeds: [], emojis: [], files: [], images: {} },
-      ...overrides,
-    }) as Post;
   return {
     getMe: async () => ({ id: ME_ID, username: "mmbot" }),
     getTeamByName: async (name: string) => ({ id: TEAM_ID, name }),
@@ -69,6 +75,10 @@ function mockClient(state: Partial<MockState> = {}): Client4 & { state: MockStat
     getChannel: async (id: string) => {
       rec("getChannel", id);
       return channel(id, id === CHANNEL_ID ? "my-channel" : id);
+    },
+    getPost: async (postId: string) => {
+      rec("getPost", postId);
+      return post(postId, "old body");
     },
     getProfilesInChannel: async (channelId: string, page?: number, perPage?: number) => {
       rec("getProfilesInChannel", channelId, page, perPage);
@@ -164,14 +174,15 @@ describe("mattermost_edit_post", () => {
     expect(output).toContain("Edited post ppppppppppppppppppppppppp1");
   });
 
-  it("throws when edit has no message", async () => {
-    const ctx = createMattermostContext(config, mockClient());
+  it("throws when edit has no message, before asking or reading the post", async () => {
+    const client = mockClient();
+    const ctx = createMattermostContext(config, client);
+    const { asks, tctx } = recordingCtx();
     await expect(
-      editPostTool(ctx).execute(
-        { post_id: "ppppppppppppppppppppppppp1", action: "edit" },
-        toolCtx(),
-      ),
+      editPostTool(ctx).execute({ post_id: "ppppppppppppppppppppppppp1", action: "edit" }, tctx),
     ).rejects.toThrow("edit requires a message");
+    expect(asks).toEqual([]);
+    expect(client.state.calls.getPost).toBeUndefined();
   });
 
   it("deletes", async () => {
@@ -239,6 +250,109 @@ describe("mattermost_edit_post", () => {
     });
     await searchTool(ctx).execute({ query: "deploy", type: "posts" }, rejecting);
     await listMembersTool(ctx).execute({ channel: "my-channel" }, rejecting);
+  });
+
+  it("names the channel, the current body and the replacement in the prompt", async () => {
+    const client = mockClient();
+    const ctx = createMattermostContext(config, client);
+    const { asks, tctx } = recordingCtx();
+    await editPostTool(ctx).execute(
+      { post_id: "ppppppppppppppppppppppppp1", action: "edit", message: "fixed" },
+      tctx,
+    );
+    expect((asks[0] as { patterns: string[] }).patterns[0]).toBe(
+      "mattermost_edit_post edit ppppppppppppppppppppppppp1 in my-channel: old body → fixed",
+    );
+  });
+
+  it("names the body a delete destroys", async () => {
+    const client = mockClient();
+    const ctx = createMattermostContext(config, client);
+    const { asks, tctx } = recordingCtx();
+    await editPostTool(ctx).execute(
+      { post_id: "ppppppppppppppppppppppppp1", action: "delete" },
+      tctx,
+    );
+    expect((asks[0] as { patterns: string[] }).patterns[0]).toBe(
+      "mattermost_edit_post delete ppppppppppppppppppppppppp1 in my-channel: old body",
+    );
+  });
+
+  it("flattens a multi-line body onto one prompt line", async () => {
+    const client = mockClient();
+    client.getPost = async (postId: string) => post(postId, "Release notes:\n\n- one\n- two");
+    const ctx = createMattermostContext(config, client);
+    const { asks, tctx } = recordingCtx();
+    await editPostTool(ctx).execute(
+      { post_id: "ppppppppppppppppppppppppp1", action: "edit", message: "next" },
+      tctx,
+    );
+    const summary = (asks[0] as { patterns: string[] }).patterns[0] ?? "";
+    expect(summary).not.toContain("\n");
+    expect(summary).toBe(
+      "mattermost_edit_post edit ppppppppppppppppppppppppp1 in my-channel: " +
+        "Release notes: - one - two → next",
+    );
+  });
+
+  it("cuts each body at 120 chars", async () => {
+    const client = mockClient();
+    client.getPost = async (postId: string) => post(postId, "x".repeat(300));
+    const ctx = createMattermostContext(config, client);
+    const { asks, tctx } = recordingCtx();
+    await editPostTool(ctx).execute(
+      { post_id: "ppppppppppppppppppppppppp1", action: "edit", message: "y".repeat(300) },
+      tctx,
+    );
+    const summary = (asks[0] as { patterns: string[] }).patterns[0] ?? "";
+    expect(summary).toContain("x".repeat(120));
+    expect(summary).not.toContain("x".repeat(121));
+    expect(summary).toContain("y".repeat(120));
+    expect(summary).not.toContain("y".repeat(121));
+  });
+
+  it("reads the post but writes nothing when the ask is rejected", async () => {
+    const client = mockClient();
+    const ctx = createMattermostContext(config, client);
+    const rejecting = toolCtx(async () => {
+      throw new Error("The user rejected permission to use this specific tool call.");
+    });
+    await expect(
+      editPostTool(ctx).execute(
+        { post_id: "ppppppppppppppppppppppppp1", action: "edit", message: "nope" },
+        rejecting,
+      ),
+    ).rejects.toThrow("rejected permission");
+    // The preview read is deliberate: mattermost_get_post makes it with no prompt at all.
+    expect(client.state.calls.getPost).toEqual([["ppppppppppppppppppppppppp1"]]);
+    expect(client.state.calls.patchPost).toBeUndefined();
+    expect(client.state.calls.deletePost).toBeUndefined();
+  });
+
+  it("falls back to the bare summary when the post cannot be read", async () => {
+    const client = mockClient();
+    const gone = () => {
+      throw new ClientError(config.url, {
+        message: "Unable to get the post.",
+        server_error_id: "app.post.get.app_error",
+        status_code: 404,
+      });
+    };
+    client.getPost = async () => gone();
+    client.deletePost = async () => gone();
+    const ctx = createMattermostContext(config, client);
+    const { asks, tctx } = recordingCtx();
+    const result = await editPostTool(ctx).execute(
+      { post_id: "ppppppppppppppppppppppppp1", action: "delete" },
+      tctx,
+    );
+    expect((asks[0] as { patterns: string[] }).patterns[0]).toBe(
+      "mattermost_edit_post delete ppppppppppppppppppppppppp1",
+    );
+    const output = typeof result === "string" ? result : result.output;
+    expect(output).toBe(
+      "Post ppppppppppppppppppppppppp1 is already deleted or does not exist — nothing to do.",
+    );
   });
 });
 
