@@ -119,6 +119,10 @@ export function reactTool(ctx: MattermostContext) {
       action: tool.schema.enum(["add", "remove"]).describe("Add or remove the reaction"),
     },
     execute: async ({ post_id: postId, emoji, action }, tctx) => {
+      // Confirm first, check second. The existence check below is a read with the user's token,
+      // so it must not run on a call the user is about to deny, and keeping it behind the gate
+      // leaves "did I react to post X" unanswerable without a prompt. A remove that turns out to
+      // be a no-op therefore still costs one prompt — deliberate, not an oversight.
       await confirmWrite(
         tctx,
         "mattermost_react",

@@ -342,13 +342,16 @@ describe("mattermost_react", () => {
     ]);
   });
 
-  it("reports nothing to remove instead of a false success", async () => {
+  it("asks first, then reports nothing to remove instead of a false success", async () => {
     const client = mockClient();
     const ctx = createMattermostContext(config, client);
+    const { asks, tctx } = recordingCtx();
     const result = await reactTool(ctx).execute(
       { post_id: "ppppppppppppppppppppppppp1", emoji: "heart", action: "remove" },
-      recordingCtx().tctx,
+      tctx,
     );
+    expect(asks).toHaveLength(1);
+    expect((asks[0] as { permission: string }).permission).toBe("mattermost_react");
     expect(client.state.order).toEqual(["getReactionsForPost"]);
     const output = typeof result === "string" ? result : result.output;
     expect(output).toBe(
@@ -359,10 +362,12 @@ describe("mattermost_react", () => {
   it("does not remove another user's reaction of the same emoji", async () => {
     const client = mockClient({ reactions: [{ user_id: "someone-else", emoji_name: "eyes" }] });
     const ctx = createMattermostContext(config, client);
+    const { asks, tctx } = recordingCtx();
     await reactTool(ctx).execute(
       { post_id: "ppppppppppppppppppppppppp1", emoji: "eyes", action: "remove" },
-      recordingCtx().tctx,
+      tctx,
     );
+    expect(asks).toHaveLength(1);
     expect(client.state.order).toEqual(["getReactionsForPost"]);
   });
 });
@@ -399,6 +404,18 @@ describe("permission gating (ctx.ask)", () => {
     const ctx = createMattermostContext(config, client);
     await expect(
       createPostTool(ctx).execute({ channel: "my-channel", message: "nope" }, rejectingCtx()),
+    ).rejects.toThrow("rejected permission");
+    expect(client.state.order).toEqual([]);
+  });
+
+  it("react performs no API calls when the ask is rejected, including on remove", async () => {
+    const client = mockClient();
+    const ctx = createMattermostContext(config, client);
+    await expect(
+      reactTool(ctx).execute(
+        { post_id: "ppppppppppppppppppppppppp1", emoji: "heart", action: "remove" },
+        rejectingCtx(),
+      ),
     ).rejects.toThrow("rejected permission");
     expect(client.state.order).toEqual([]);
   });

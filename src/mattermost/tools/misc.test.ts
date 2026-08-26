@@ -204,10 +204,12 @@ describe("mattermost_edit_post", () => {
       });
     };
     const ctx = createMattermostContext(config, client);
+    const asks: unknown[] = [];
     const result = await editPostTool(ctx).execute(
       { post_id: "ppppppppppppppppppppppppp1", action: "delete" },
-      toolCtx(),
+      toolCtx(async (input) => void asks.push(input)),
     );
+    expect(asks).toHaveLength(1);
     const output = typeof result === "string" ? result : result.output;
     expect(output).toBe(
       "Post ppppppppppppppppppppppppp1 is already deleted or does not exist — nothing to do.",
@@ -250,6 +252,30 @@ describe("mattermost_edit_post", () => {
     });
     await searchTool(ctx).execute({ query: "deploy", type: "posts" }, rejecting);
     await listMembersTool(ctx).execute({ channel: "my-channel" }, rejecting);
+  });
+
+  it("edit_post and dm perform no API calls when the ask is rejected", async () => {
+    const client = mockClient();
+    const ctx = createMattermostContext(config, client);
+    const rejecting = toolCtx(async () => {
+      throw new Error("The user rejected permission to use this specific tool call.");
+    });
+    await expect(
+      editPostTool(ctx).execute(
+        { post_id: "ppppppppppppppppppppppppp1", action: "delete" },
+        rejecting,
+      ),
+    ).rejects.toThrow("rejected permission");
+    await expect(dmTool(ctx).execute({ username: "alice" }, rejecting)).rejects.toThrow(
+      "rejected permission",
+    );
+    // `edit_post` reads the post and its channel before asking, so the prompt can name what is
+    // about to be rewritten — a prompt-rendering lookup, which the gate invariant allows. What a
+    // denial must prevent is every call that changes something.
+    expect(Object.keys(client.state.calls).sort()).toEqual(["getChannel", "getPost"]);
+    for (const write of ["patchPost", "deletePost", "createDirectChannel", "getUserByUsername"]) {
+      expect(client.state.calls[write]).toBeUndefined();
+    }
   });
 
   it("names the channel, the current body and the replacement in the prompt", async () => {
