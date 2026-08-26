@@ -17,6 +17,8 @@ const FULL_HINT = "pass full=true for the whole message";
 export interface FormatOptions {
   limit?: number;
   full?: boolean;
+  /** Set false when the calling tool has no `before` argument, so the paging hint would misfire. */
+  paging?: boolean;
 }
 
 export interface MattermostContext {
@@ -226,7 +228,7 @@ export function createMattermostContext(
     // `prev_post_id` is the server's own "older posts exist" flag: set when the page it returned
     // is not the start of the channel, empty when it is. The length check covers the branches
     // that fetch without a limit (`pinned`, `since`, unread) and get trimmed for display here.
-    if (oldest && (all.length > shown.length || list.prev_post_id)) {
+    if (oldest && options.paging !== false && (all.length > shown.length || list.prev_post_id)) {
       lines.push(`(${shown.length} posts shown — older posts exist, pass before=${oldest.id})`);
     }
     return lines.join("\n");

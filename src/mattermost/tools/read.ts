@@ -6,6 +6,8 @@ import type { MattermostContext } from "../context.js";
 // `last_viewed_at === 0` means the channel was never opened, so its whole history reads as unread.
 const FIRST_RUN_NOTE = "first run: full history unread, consider mark_read bootstrap";
 const DEFAULT_LIMIT = 30;
+// Already-read posts fetched below the unread ones so the first unread one has some context.
+const CONTEXT_LIMIT = 5;
 
 export function readPostsTool(ctx: MattermostContext) {
   return tool({
@@ -134,7 +136,7 @@ export function readUnreadTool(ctx: MattermostContext) {
         .min(1)
         .max(200)
         .optional()
-        .describe("Max posts to show (default 30, max 200)"),
+        .describe("Max unread posts to fetch and show (default 30, max 200)"),
       full: tool.schema
         .boolean()
         .optional()
@@ -179,12 +181,20 @@ export function readUnreadTool(ctx: MattermostContext) {
         };
       }
       const me = await ctx.me();
-      const list = await ctx.client.getPostsUnread(resolved.id, me.id);
+      const max = limit ?? DEFAULT_LIMIT;
+      const list = await ctx.client.getPostsUnread(resolved.id, me.id, max, CONTEXT_LIMIT);
       const note = membership.last_viewed_at === 0 ? `\n${FIRST_RUN_NOTE}` : "";
-      const body = await ctx.formatPosts(list, { limit, full });
+      const context = `plus up to ${CONTEXT_LIMIT} already-read posts for context`;
+      // The server sets `next_post_id` when unread posts remain beyond the window it returned.
+      const head = list.next_post_id
+        ? `${resolved.name}: ${unread} unread — showing the oldest ${max}, ${context}; raise limit (max 200) for the rest`
+        : `${resolved.name}: ${unread} unread — all shown, ${context}`;
+      // The window is at most `limit_after + limit_before` posts, so this never trims. The paging
+      // hint is off: this tool has no `before` argument, and `prev_post_id` points into read history.
+      const body = await ctx.formatPosts(list, { limit: max + CONTEXT_LIMIT, full, paging: false });
       return {
         title: `Mattermost: unread in ${resolved.name}`,
-        output: `${resolved.name}: ${unread} unread (context included)\n${body}${note}`,
+        output: `${head}\n${body}${note}`,
       };
     },
   });

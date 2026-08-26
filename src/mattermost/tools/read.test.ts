@@ -710,21 +710,59 @@ describe("mattermost_read_unread", () => {
     const client = mockClient({ posts: [post({ message: "hello" })] });
     const { readUnread, calls } = makeTools(client);
     const result = await readUnread({ channel: "my-channel" }, toolCtx);
-    expect(calls.getPostsUnread).toEqual([[CHANNEL_ID, ME_ID, undefined, undefined]]);
+    expect(calls.getPostsUnread).toStrictEqual([[CHANNEL_ID, ME_ID, 30, 5]]);
     const output = typeof result === "string" ? result : result.output;
     expect(output).toContain("my-channel: 2 unread");
     expect(output).toContain("hello");
     expect(output).not.toContain("first run");
   });
 
-  it("caps the unread dump at limit", async () => {
+  // The cap is the server's now, and `limit_after` reads forward from the read cursor — so the
+  // oldest unread posts come back, not the newest.
+  it("asks the server for at most limit unread posts and says more remain", async () => {
     const posts = Array.from({ length: 12 }, (_, i) => post({ message: `u${i}` }));
     const client = mockClient({ posts });
-    const { readUnread } = makeTools(client);
+    const { readUnread, calls } = makeTools(client);
     const result = await readUnread({ channel: "my-channel", limit: 3 }, toolCtx);
     const output = typeof result === "string" ? result : result.output;
+    expect(calls.getPostsUnread).toStrictEqual([[CHANNEL_ID, ME_ID, 3, 5]]);
+    expect(output).toContain("u0");
+    expect(output).not.toContain("u3");
+    expect(output).toContain("raise limit (max 200) for the rest");
+  });
+
+  it("forwards the limit and the fixed context window", async () => {
+    const client = mockClient({ posts: [post({ message: "hello" })] });
+    const { readUnread, calls } = makeTools(client);
+    await readUnread({ channel: "my-channel", limit: 50 }, toolCtx);
+    expect(calls.getPostsUnread).toStrictEqual([[CHANNEL_ID, ME_ID, 50, 5]]);
+  });
+
+  it("returns the oldest unread posts and admits the ones left on the server", async () => {
+    const posts = Array.from({ length: 40 }, (_, i) => post({ message: `u${i}` }));
+    const client = mockClient({ posts });
+    const { readUnread } = makeTools(client);
+    const result = await readUnread({ channel: "my-channel", limit: 10 }, toolCtx);
+    const output = typeof result === "string" ? result : result.output;
+    expect(output).toContain("showing the oldest 10");
+    expect(output).toContain("raise limit (max 200) for the rest");
+    expect(output).toContain("u0");
+    expect(output).not.toContain("u10");
+  });
+
+  // Tripwire for the B2 hint: `prev_post_id` is set here (read history precedes the window), but
+  // this tool has no `before` argument, so the hint must stay off.
+  it("says all shown, keeps the context window and never emits a paging hint", async () => {
+    const posts = Array.from({ length: 12 }, (_, i) => post({ message: `u${i}` }));
+    const client = mockClient({ posts, read: 7 });
+    const { readUnread } = makeTools(client);
+    const result = await readUnread({ channel: "my-channel" }, toolCtx);
+    const output = typeof result === "string" ? result : result.output;
+    expect(output).toContain("all shown");
+    expect(output).toContain("u2");
+    expect(output).not.toContain("u1\n");
     expect(output).toContain("u11");
-    expect(output).not.toContain("u8");
+    expect(output).not.toContain("before=");
   });
 
   it("asks only about the one channel, not the whole team", async () => {
