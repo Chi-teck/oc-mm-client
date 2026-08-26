@@ -55,6 +55,15 @@ function post(overrides: Partial<Post> = {}): Post {
   };
 }
 
+/** A root post plus `n` replies, created oldest-first so `create_at` orders them. */
+function thread(replies: number): { root: Post; posts: Post[] } {
+  const root = post({ message: "root" });
+  const rest = Array.from({ length: replies }, (_, i) =>
+    post({ message: `r${i}`, root_id: root.id }),
+  );
+  return { root, posts: [root, ...rest] };
+}
+
 function reaction(userId: string, emoji: string): Reaction {
   return {
     user_id: userId,
@@ -105,9 +114,13 @@ function channelPage(all: Post[], page: number, perPage: number, until: number):
 }
 
 /**
- * One page of a thread. `perPage` counts replies — the root always comes back on top — and
- * `direction: "up"` keeps the newest replies, `"down"` the oldest. `has_next` says whether any
- * reply was left behind, and the root reports the true `reply_count`.
+ * One page of a thread, modelling `direction: "up"` — the only direction this codebase asks for.
+ * `perPage` counts replies, the root always comes back on top, and the root reports the true
+ * `reply_count`.
+ *
+ * `has_next` is `perPage <= reply_count`, not `perPage < reply_count`: measured against Mattermost
+ * 11.0.4 on a 44-reply thread, `perPage: 44` answered `has_next: true` with all 44 replies present,
+ * and only `perPage: 45` answered `false`. So the server flags a *full* page, not a truncated one.
  */
 function threadPage(
   posts: Post[],
@@ -124,7 +137,7 @@ function threadPage(
       : replies.slice(0, perPage);
   return {
     ...postList([{ ...root, reply_count: replies.length }, ...kept]),
-    has_next: kept.length < replies.length,
+    has_next: replies.length >= perPage,
   };
 }
 
@@ -262,11 +275,6 @@ function mockClient(state: Partial<MockState> = {}): Client4 & { state: MockStat
       }
       return found;
     },
-    getPostThread: async (postId: string) => {
-      rec("getPostThread", postId);
-      // Client4 forwards to the paginated endpoint with its own defaults (client4.js:1270-1272).
-      return threadPage(s.posts, postId, PER_PAGE_DEFAULT, "down");
-    },
     getPaginatedPostThread: async (
       postId: string,
       options: { perPage?: number; direction?: "up" | "down" } = {},
@@ -400,15 +408,95 @@ describe("mattermost_read_posts", () => {
     expect(calls.getPosts).toBeUndefined();
   });
 
-  it("uses getPostThread when thread_root_id given (even with since)", async () => {
-    const client = mockClient();
+  it("uses getPaginatedPostThread when thread_root_id given (even with since)", async () => {
+    const { root, posts } = thread(0);
+    const client = mockClient({ posts });
     const { readPosts, calls } = makeTools(client);
-    await readPosts(
-      { channel: "my-channel", thread_root_id: "rrrrrrrrrrrrrrrrrrrrrrrrrr", since: "2h" },
+    await readPosts({ channel: "my-channel", thread_root_id: root.id, since: "2h" }, toolCtx);
+    expect(calls.getPaginatedPostThread).toEqual([[root.id, { perPage: 30, direction: "up" }]]);
+    expect(calls.getPostsSince).toBeUndefined();
+  });
+
+  it("keeps the thread root above the newest replies", async () => {
+    const { root, posts } = thread(35);
+    const client = mockClient({ posts });
+    const { readPosts } = makeTools(client);
+    const result = await readPosts({ channel: "my-channel", thread_root_id: root.id }, toolCtx);
+    const output = typeof result === "string" ? result : result.output;
+    expect(output).toContain(": root");
+    expect(output).toContain(": r34");
+    expect(output).toContain(": r5");
+    expect(output).not.toContain(": r4");
+  });
+
+  it("says how many thread replies it left out", async () => {
+    const { root, posts } = thread(35);
+    const client = mockClient({ posts });
+    const { readPosts } = makeTools(client);
+    const result = await readPosts({ channel: "my-channel", thread_root_id: root.id }, toolCtx);
+    const output = typeof result === "string" ? result : result.output;
+    expect(output).toContain("(newest 30 replies shown of 35 — pass limit=200 for more)");
+  });
+
+  // The channel-level `before=` hint is the wrong instrument for a thread: following it reads
+  // unrelated channel history. Displaying at `max + 1` keeps the trim from ever firing here.
+  it("never offers before= paging on a thread read", async () => {
+    const { root, posts } = thread(35);
+    const client = mockClient({ posts });
+    const { readPosts } = makeTools(client);
+    const result = await readPosts({ channel: "my-channel", thread_root_id: root.id }, toolCtx);
+    const output = typeof result === "string" ? result : result.output;
+    expect(output).not.toContain("before=");
+  });
+
+  it("adds no note when the whole thread fits", async () => {
+    const { root, posts } = thread(8);
+    const client = mockClient({ posts });
+    const { readPosts } = makeTools(client);
+    const result = await readPosts({ channel: "my-channel", thread_root_id: root.id }, toolCtx);
+    const output = typeof result === "string" ? result : result.output;
+    expect(output).toContain(": r0");
+    expect(output).toContain(": r7");
+    expect(output).not.toContain("replies shown");
+  });
+
+  // The server sets `has_next` on a *full* page, so a thread with exactly `limit` replies is
+  // flagged even though nothing was left out. The note must not then invent an "of M" that would
+  // read as "3 of 3 shown, more exist".
+  it("claims no total when the server flags a full page it did not truncate", async () => {
+    const { root, posts } = thread(3);
+    const client = mockClient({ posts });
+    const { readPosts } = makeTools(client);
+    const result = await readPosts(
+      { channel: "my-channel", thread_root_id: root.id, limit: 3 },
       toolCtx,
     );
-    expect(calls.getPostThread).toEqual([["rrrrrrrrrrrrrrrrrrrrrrrrrr"]]);
-    expect(calls.getPostsSince).toBeUndefined();
+    const output = typeof result === "string" ? result : result.output;
+    expect(output).toContain(": root");
+    expect(output).toContain(": r0");
+    expect(output).toContain("(newest 3 replies shown — pass limit=200 for more)");
+    expect(output).not.toContain("of 3");
+  });
+
+  it("shows a reply-less thread as just its root", async () => {
+    const root = post({ message: "lonely root", create_at: Date.now() });
+    const client = mockClient({ posts: [root] });
+    const { readPosts } = makeTools(client);
+    const result = await readPosts({ channel: "my-channel", thread_root_id: root.id }, toolCtx);
+    const output = typeof result === "string" ? result : result.output;
+    expect(output).toBe("**mmbot** (just now): lonely root");
+  });
+
+  it("stops offering a higher limit once limit is 200", async () => {
+    const { root, posts } = thread(201);
+    const client = mockClient({ posts });
+    const { readPosts } = makeTools(client);
+    const result = await readPosts(
+      { channel: "my-channel", thread_root_id: root.id, limit: 200 },
+      toolCtx,
+    );
+    const output = typeof result === "string" ? result : result.output;
+    expect(output).toContain("(newest 200 replies shown of 201 — older replies are out of reach)");
   });
 
   it("formats posts with username, file metadata and reply threads", async () => {

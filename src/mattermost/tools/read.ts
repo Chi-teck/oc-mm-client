@@ -10,7 +10,7 @@ const DEFAULT_LIMIT = 30;
 export function readPostsTool(ctx: MattermostContext) {
   return tool({
     description:
-      'Read posts from a Mattermost channel. Branches: thread_root_id → full thread; pinned → pinned posts; before → posts older than a post id; since → posts since a time ("2h", "30m", ISO date, epoch ms); otherwise latest posts (limit, default 30). Bodies are cut at 500 chars unless full=true.',
+      'Read posts from a Mattermost channel. Branches: thread_root_id → a thread\'s root plus its newest replies; pinned → pinned posts; before → posts older than a post id; since → posts since a time ("2h", "30m", ISO date, epoch ms); otherwise latest posts (limit, default 30). Bodies are cut at 500 chars unless full=true.',
     args: {
       channel: tool.schema.string().describe("Channel name or 26-char id"),
       since: tool.schema
@@ -24,7 +24,7 @@ export function readPostsTool(ctx: MattermostContext) {
       thread_root_id: tool.schema
         .string()
         .optional()
-        .describe("Read the full thread of this root post id"),
+        .describe("Read this thread: its root post plus the newest replies (up to limit)"),
       pinned: tool.schema.boolean().optional().describe("Read only pinned posts"),
       limit: tool.schema
         .number()
@@ -32,7 +32,9 @@ export function readPostsTool(ctx: MattermostContext) {
         .min(1)
         .max(200)
         .optional()
-        .describe("Max posts to fetch and show (default 30, max 200)"),
+        .describe(
+          "Max posts to fetch and show (default 30, max 200); on a thread it counts replies and the root is shown on top of them",
+        ),
       full: tool.schema
         .boolean()
         .optional()
@@ -43,8 +45,22 @@ export function readPostsTool(ctx: MattermostContext) {
       const max = limit ?? DEFAULT_LIMIT;
       let list: PostList;
       let scope: string;
+      let note = "";
       if (rootId) {
-        list = await ctx.client.getPostThread(rootId);
+        // `direction: "up"` pages from the newest reply; the default "down" pages from the oldest,
+        // so a long thread came back without its conclusion. `perPage` counts replies — the root
+        // is always returned on top of them.
+        const thread = await ctx.client.getPaginatedPostThread(rootId, {
+          perPage: max,
+          direction: "up",
+        });
+        if (thread.has_next) {
+          const total = thread.posts[rootId]?.reply_count ?? 0;
+          const of = total > max ? ` of ${total}` : "";
+          const more = max < 200 ? "pass limit=200 for more" : "older replies are out of reach";
+          note = `\n(newest ${max} replies shown${of} — ${more})`;
+        }
+        list = thread;
         scope = `thread ${rootId}`;
       } else if (pinned) {
         list = await ctx.client.getPinnedPosts(resolved.id);
@@ -59,8 +75,9 @@ export function readPostsTool(ctx: MattermostContext) {
         list = await ctx.client.getPosts(resolved.id, 0, max);
         scope = "latest";
       }
-      const output = await ctx.formatPosts(list, { limit: max, full });
-      return { title: `Mattermost: ${resolved.name} (${scope})`, output };
+      // The thread branch shows one post over the limit: `max` replies plus the root they hang off.
+      const output = await ctx.formatPosts(list, { limit: rootId ? max + 1 : max, full });
+      return { title: `Mattermost: ${resolved.name} (${scope})`, output: `${output}${note}` };
     },
   });
 }
