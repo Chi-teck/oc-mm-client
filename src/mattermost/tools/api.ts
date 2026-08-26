@@ -22,10 +22,10 @@ async function expandPath(ctx: MattermostContext, path: string): Promise<string>
 /**
  * Resolves a caller-supplied path against `<url>/api/v4`. The request carries the personal access
  * token, so the path must not be able to send it anywhere else: an absolute URL is refused, and
- * anything that resolves outside the API root — `..` climbing, mostly — is refused too. The path is
- * concatenated onto the absolute base rather than resolved against it, so a protocol-relative
- * `//host` stays a path segment. This matters because the path comes from a model that reads
- * untrusted channel content.
+ * anything that resolves outside the API root — `..` climbing, mostly — is refused too, both as
+ * written and as the server reads it once the escapes are decoded. The path is concatenated onto
+ * the absolute base rather than resolved against it, so a protocol-relative `//host` stays a path
+ * segment. This matters because the path comes from a model that reads untrusted channel content.
  */
 export function apiUrl(ctx: MattermostContext, path: string): { url: URL; target: string } {
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(path)) {
@@ -38,6 +38,20 @@ export function apiUrl(ctx: MattermostContext, path: string): { url: URL; target
   const url = new URL(`${base}${rest.startsWith("/") ? "" : "/"}${rest}`);
   const root = new URL(base);
   if (url.origin !== root.origin || !url.pathname.startsWith(`${root.pathname}/`)) {
+    throw new Error(`Path must stay under ${base}: ${path}`);
+  }
+  // `new URL` resolves `..`, but `%2f` and `%5c` stay encoded, so `..%2f..%2fevil` survives the
+  // check above and only the server sees the climb. Re-run the same parse over the decoded path,
+  // holding back `?` and `#` so they stay path characters instead of ending the path early. Only
+  // the path is decoded: `%2f` in a query value is data, and `?terms=docs%2Fapi` must still work.
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(url.pathname);
+  } catch {
+    throw new Error(`Path must use valid percent-encoding: ${path}`);
+  }
+  const replay = new URL(root.origin + decoded.replaceAll("?", "%3F").replaceAll("#", "%23"));
+  if (!replay.pathname.startsWith(`${root.pathname}/`)) {
     throw new Error(`Path must stay under ${base}: ${path}`);
   }
   // The normalized path as the caller writes it — what the permission prompt should show.

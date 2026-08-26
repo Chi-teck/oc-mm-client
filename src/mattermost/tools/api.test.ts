@@ -202,10 +202,48 @@ describe("mattermost_api", () => {
   });
 
   it("refuses paths that would leave the server", async () => {
-    for (const path of ["https://evil.example/x", "/../../evil", "/users/../../../evil"]) {
+    // The encoded forms matter as much as the plain ones: `new URL` resolves `..` but keeps `%2f`
+    // and `%5c` encoded, so the climb is invisible until the server decodes the path.
+    for (const path of [
+      "https://evil.example/x",
+      "/../../evil",
+      "/users/../../../evil",
+      "/..%2f..%2fevil",
+      "/..%2F..%2Fevil",
+      "/%2e%2e%2f%2e%2e%2fevil",
+      "/..%5c..%5cevil",
+      "/x%3f..%2f..%2f..%2fevil",
+      "/x%23..%2f..%2f..%2fevil",
+    ]) {
       const { api, calls } = makeTool();
       await expect(api({ path }, toolCtx())).rejects.toThrow(/Path must/);
       expect(calls).toEqual([]);
+    }
+  });
+
+  it("refuses a path it cannot decode", async () => {
+    // An escape the guard cannot read is an escape it cannot check.
+    for (const path of ["/users/100%", "/users/%zz", "/users/%C0%80"]) {
+      const { api, calls } = makeTool();
+      await expect(api({ path }, toolCtx())).rejects.toThrow("valid percent-encoding");
+      expect(calls).toEqual([]);
+    }
+  });
+
+  it("keeps percent-encoded values that stay under the API root", async () => {
+    // The guard decodes the path to check it, not to rewrite it: an encoded slash is data, and a
+    // query value is never decoded at all.
+    const cases: [string, string][] = [
+      ["/files/search?terms=docs%2Fapi", "/api/v4/files/search?terms=docs%2Fapi"],
+      ["/users?terms=a%2Fb%5Cc%3Fd%23e", "/api/v4/users?terms=a%2Fb%5Cc%3Fd%23e"],
+      ["/users/username/a%20b", "/api/v4/users/username/a%20b"],
+      ["/users%2f..%2fme", "/api/v4/users%2f..%2fme"],
+      ["/users/../me", "/api/v4/me"],
+    ];
+    for (const [path, expected] of cases) {
+      const { api, calls } = makeTool();
+      await api({ path }, toolCtx());
+      expect(calls[0]?.url).toBe(`https://mm.example.com${expected}`);
     }
   });
 
