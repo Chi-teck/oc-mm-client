@@ -1,7 +1,13 @@
 import { mkdir } from "node:fs/promises";
 import { basename, extname, join, resolve } from "node:path";
 import { tool } from "@opencode-ai/plugin";
-import type { MattermostContext } from "../context.js";
+import { humanSize, type MattermostContext, truncate } from "../context.js";
+
+// The server caps uploads at `MaxFileSize` = 268435456 (`GET /api/v4/config/client?format=old`), so
+// no legitimate attachment can exceed this and the ceiling can never refuse a real file.
+const MAX_DOWNLOAD = 256 * 1024 * 1024;
+// Same cut as `api.ts`: enough of the body to identify the failure, not a whole HTML error page.
+const MAX_ERROR = 500;
 
 // Roots come in preference order: the worktree may be missing or read-only, so keep trying.
 async function ensureDownloadDir(roots: string[]): Promise<string> {
@@ -36,14 +42,37 @@ export function getFileTool(ctx: MattermostContext) {
       name: tool.schema.string().optional().describe("Preferred file name"),
     },
     execute: async ({ file_id: fileId, name }, tctx) => {
-      // Client4 only builds the URL for downloads, so fetch the bytes directly. The timestamp is
-      // the cache buster Mattermost appends to the query.
+      // Client4 only builds the URL for downloads — `doFetch` decodes the body by `Content-Type`
+      // and would run `.text()` over a binary attachment — so the request is hand-rolled. It still
+      // comes from `getOptions`, so the token, `Accept-Language` and the abort signal stay in one
+      // place. The timestamp is the cache buster Mattermost appends to the query.
       const url = ctx.client.getFileUrl(fileId, Date.now());
       const response = await fetch(url, {
-        headers: { Authorization: `Bearer ${ctx.config.token}` },
+        ...ctx.client.getOptions({ signal: tctx.abort }),
+        // Following a 3xx would resend the request — and the token — wherever the server points.
+        redirect: "manual",
       });
+      if (response.status >= 300 && response.status < 400) {
+        const location = response.headers.get("location") ?? "an undisclosed location";
+        throw new Error(`File download ${fileId} redirected to ${location}; refusing to follow it`);
+      }
       if (!response.ok) {
-        throw new Error(`File download failed (${response.status}): ${fileId}`);
+        // Read the body only here: on the success path it must reach `Bun.write` unconsumed.
+        const detail = truncate((await response.text()).trim(), "response cut", MAX_ERROR);
+        throw new Error(
+          `File download failed (${response.status}): ${fileId}${detail ? ` — ${detail}` : ""}`,
+        );
+      }
+      // `Bun.write` buffers the whole body whatever shape it is handed, so the declared length is
+      // the only thing standing between a huge attachment and this process's heap. A missing or
+      // unparseable header falls open — `Number(null)` is 0 and `Number("x")` is NaN, and both
+      // compare false here: the server always sets it for a file download, and refusing without it
+      // would break any proxy that re-chunks the response.
+      const declared = Number(response.headers.get("content-length"));
+      if (declared > MAX_DOWNLOAD) {
+        throw new Error(
+          `File ${fileId} is ${humanSize(declared)}, over the ${humanSize(MAX_DOWNLOAD)} limit`,
+        );
       }
       const disposition = response.headers.get("content-disposition") ?? "";
       // Matches both `filename="x"` and the RFC 5987 `filename*=UTF-8''x` form.
@@ -51,7 +80,7 @@ export function getFileTool(ctx: MattermostContext) {
       const preferred = (name ?? fromHeader ?? `${fileId}.bin`).replace(/[/\\]/g, "_");
       const dir = await ensureDownloadDir([tctx.worktree, tctx.directory, process.cwd()]);
       const target = await uniquePath(dir, preferred);
-      await Bun.write(target, await response.arrayBuffer());
+      await Bun.write(target, response);
       return {
         title: `Mattermost: saved ${preferred}`,
         output: `Saved ${target} (file id: ${fileId})`,
