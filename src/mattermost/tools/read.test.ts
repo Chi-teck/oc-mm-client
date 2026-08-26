@@ -31,12 +31,16 @@ const toolCtx = {
   ask: async () => {},
 } as ToolContext;
 
+// When `MEMBERSHIPS[0]` last saw the channel. Default posts are created after it, so the fixture
+// is coherent: the member has read up to here, and everything below is genuinely unread.
+const LAST_VIEWED_AT = 1_700_000_500_000;
+
 let seq = 0;
 function post(overrides: Partial<Post> = {}): Post {
   seq += 1;
   return {
     id: `ppppppppppppppppppppppp${String(seq).padStart(2, "0")}`,
-    create_at: 1_700_000_000_000 + seq * 1000,
+    create_at: LAST_VIEWED_AT + seq * 1000,
     update_at: 0,
     edit_at: 0,
     delete_at: 0,
@@ -164,7 +168,7 @@ const MEMBERSHIPS = [
     channel_id: CHANNEL_ID,
     msg_count: 8,
     mention_count: 2,
-    last_viewed_at: 1_700_000_500_000,
+    last_viewed_at: LAST_VIEWED_AT,
   },
   {
     channel_id: "dddddddddddddddddddddddddd",
@@ -760,7 +764,9 @@ describe("mattermost_read_unread", () => {
     const result = await readUnread({ channel: "my-channel" }, toolCtx);
     expect(calls.getPostsUnread).toStrictEqual([[CHANNEL_ID, ME_ID, 30, 5]]);
     const output = typeof result === "string" ? result : result.output;
-    expect(output).toContain("my-channel: 2 unread");
+    // One post came back; the membership counter claims two. Report the window, note the counter.
+    expect(output).toContain("my-channel: 1 unread — all shown");
+    expect(output).toContain("(the channel counter says 2)");
     expect(output).toContain("hello");
     expect(output).not.toContain("first run");
   });
@@ -863,6 +869,23 @@ describe("mattermost_read_unread", () => {
     expect(output).toBe("my-channel: 0 unread, 2 mentions");
   });
 
+  it("says the counter is stale when the server returns nothing unread", async () => {
+    // Every post predates the member's last view, so none of them is actually unread — the
+    // counter and the server's own unread window disagree.
+    const posts = Array.from({ length: 8 }, (_, i) =>
+      post({ message: `old${i}`, create_at: LAST_VIEWED_AT - 10_000 + i }),
+    );
+    const client = mockClient({ posts, read: posts.length });
+    const { readUnread } = makeTools(client);
+    const result = await readUnread({ channel: "my-channel" }, toolCtx);
+    const output = typeof result === "string" ? result : result.output;
+    expect(output).toContain(
+      "my-channel: nothing unread on the server — the counter says 2, but every post below is already read",
+    );
+    expect(output).not.toContain("all shown");
+    expect(output).toContain("old7");
+  });
+
   it("still shows one channel's unread mentions when its counter says nothing is unread", async () => {
     const base = mockClient({ posts: [post({ message: "you were mentioned" })] });
     const client = {
@@ -878,7 +901,9 @@ describe("mattermost_read_unread", () => {
     const ctx = createMattermostContext(config, client);
     const result = await readUnreadTool(ctx).execute({ channel: "my-channel" }, toolCtx);
     const output = typeof result === "string" ? result : result.output;
-    expect(output).toContain("my-channel: 0 unread —");
+    // The clamped counter says 0, but the window really does hold an unread post.
+    expect(output).toContain("my-channel: 1 unread — all shown");
+    expect(output).toContain("(the channel counter says 0)");
     expect(output).toContain("you were mentioned");
   });
 });
