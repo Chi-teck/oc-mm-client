@@ -427,6 +427,24 @@ describe("mattermost_search", () => {
 });
 
 describe("mattermost_list_members", () => {
+  // A server with `total` members: offset is page * per_page, and past the end it returns [].
+  const memberServer = (total: number) => {
+    const asked: number[][] = [];
+    const client = {
+      ...mockClient(),
+      getProfilesInChannel: async (_channelId: string, page: number, perPage: number) => {
+        asked.push([page, perPage]);
+        const offset = page * perPage;
+        const size = Math.max(0, Math.min(perPage, total - offset));
+        return Array.from({ length: size }, (_, i) => ({
+          id: `u${offset + i}`,
+          username: `user${offset + i}`,
+        }));
+      },
+    } as unknown as Client4 & { state: MockState };
+    return { client, asked };
+  };
+
   it("lists channel profiles", async () => {
     const client = mockClient();
     const ctx = createMattermostContext(config, client);
@@ -456,6 +474,39 @@ describe("mattermost_list_members", () => {
     expect(asked).toEqual([0, 1]);
     const title = typeof result === "string" ? "" : result.title;
     expect(title).toBe("Mattermost: 205 members of my-channel");
+  });
+
+  it("reports exactly 1000 members as complete, not truncated", async () => {
+    const { client, asked } = memberServer(1000);
+    const ctx = createMattermostContext(config, client);
+    const result = await listMembersTool(ctx).execute({ channel: "my-channel" }, toolCtx());
+    // The sixth request is the probe page that proves nothing follows.
+    expect(asked).toEqual([
+      [0, 200],
+      [1, 200],
+      [2, 200],
+      [3, 200],
+      [4, 200],
+      [5, 200],
+    ]);
+    const title = typeof result === "string" ? "" : result.title;
+    expect(title).toBe("Mattermost: 1000 members of my-channel");
+    const output = typeof result === "string" ? result : result.output;
+    expect(output.split("\n")).toHaveLength(1000);
+    expect(output).not.toContain("pass query to search");
+  });
+
+  it("reports more than 1000 members as truncated and drops the overflow page", async () => {
+    const { client, asked } = memberServer(1001);
+    const ctx = createMattermostContext(config, client);
+    const result = await listMembersTool(ctx).execute({ channel: "my-channel" }, toolCtx());
+    expect(asked).toHaveLength(6);
+    const title = typeof result === "string" ? "" : result.title;
+    expect(title).toBe("Mattermost: first 1000 members of my-channel");
+    const output = typeof result === "string" ? result : result.output;
+    expect(output).toContain("- user999");
+    expect(output).not.toContain("- user1000");
+    expect(output.split("\n").at(-1)).toBe("(first 1000 members — pass query to search)");
   });
 
   it("autocomplete splits in-channel vs out-of-channel with warning", async () => {

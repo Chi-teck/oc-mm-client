@@ -42,12 +42,15 @@ async function channelProfiles(
   channelId: string,
 ): Promise<{ profiles: UserProfile[]; complete: boolean }> {
   const profiles: UserProfile[] = [];
-  for (let page = 0; profiles.length < MAX_PROFILES; page++) {
+  // A full last page is not proof of truncation, so once the cap is reached one more page is
+  // fetched purely to ask "is there anything after this?" — past the end the server returns [].
+  // MAX_PROFILES is a multiple of PROFILE_PAGE, which is what keeps that probe page exact.
+  for (let page = 0; ; page++) {
     const batch = await ctx.client.getProfilesInChannel(channelId, page, PROFILE_PAGE);
+    if (profiles.length >= MAX_PROFILES) return { profiles, complete: batch.length === 0 };
     profiles.push(...batch);
     if (batch.length < PROFILE_PAGE) return { profiles, complete: true };
   }
-  return { profiles, complete: false };
 }
 
 /**
