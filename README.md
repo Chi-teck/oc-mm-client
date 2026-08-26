@@ -40,9 +40,9 @@ unprompted like the other read tools.
 Credentials come from the environment:
 
 ```sh
-export MM_URL=https://mattermost.example.com
-export MM_TOKEN=your-personal-access-token
-export MM_TEAM=my-team
+export OC_MM_URL=https://mattermost.example.com
+export OC_MM_TOKEN=your-personal-access-token
+export OC_MM_TEAM=my-team
 ```
 
 They can also be passed inline as plugin options, which take precedence over the environment:
@@ -102,7 +102,7 @@ bun install
 cp .env.example .env.local
 ```
 
-Set `MM_URL`, `MM_TOKEN` and `MM_TEAM` there; real environment variables take precedence over the
+Set `OC_MM_URL`, `OC_MM_TOKEN` and `OC_MM_TEAM` there; real environment variables take precedence over the
 file. `.opencode/` is not tracked, so create `.opencode/opencode.json` yourself — it registers the
 working tree as a plugin instead of the published package, and marks the write tools as `ask`:
 

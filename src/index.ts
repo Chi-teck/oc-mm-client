@@ -28,7 +28,7 @@ export default (async (input, options) => {
   const team = strOption(options, "team") ?? env?.team;
   if (!url || !token || !team) {
     console.error(
-      "oc-mm-client disabled: set MM_URL, MM_TOKEN and MM_TEAM, or url/token/team plugin options",
+      "oc-mm-client disabled: set OC_MM_URL, OC_MM_TOKEN and OC_MM_TEAM, or url/token/team plugin options",
     );
     return {};
   }

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import { type Client4, ClientError } from "@mattermost/client";
 import type { ServerChannel } from "@mattermost/types/channels";
 import type { ServerError } from "@mattermost/types/errors";
@@ -63,10 +63,6 @@ function mockClient(overrides: Record<string, unknown> = {}): Client4 & { calls:
   };
   return { ...base, calls } as unknown as Client4 & { calls: string[][] };
 }
-
-afterEach(() => {
-  delete process.env.MM_TEST_NOW;
-});
 
 describe("parseSince", () => {
   const now = 1_800_000_000_000;

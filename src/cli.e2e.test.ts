@@ -19,9 +19,9 @@ async function runCli(args: string[]): Promise<{ code: number; stdout: string; s
     cwd: root,
     env: {
       ...process.env,
-      MM_URL: server.url,
-      MM_TOKEN: "tok",
-      MM_TEAM: "my-team",
+      OC_MM_URL: server.url,
+      OC_MM_TOKEN: "tok",
+      OC_MM_TEAM: "my-team",
     },
     stdout: "pipe",
     stderr: "pipe",

@@ -6,7 +6,7 @@ import type { PluginInput } from "@opencode-ai/plugin";
 import { startMockMattermost } from "../test/mock-server.js";
 import plugin from "./index.js";
 
-const MM_KEYS = ["MM_URL", "MM_TOKEN", "MM_TEAM"] as const;
+const OC_MM_KEYS = ["OC_MM_URL", "OC_MM_TOKEN", "OC_MM_TEAM"] as const;
 
 let cwd: string;
 let sandbox: string;
@@ -20,14 +20,14 @@ beforeAll(async () => {
   sandbox = await mkdtemp(join(tmpdir(), "oc-mm-plugin-"));
   input = { directory: sandbox } as PluginInput;
   process.chdir(sandbox);
-  saved = Object.fromEntries(MM_KEYS.map((key) => [key, process.env[key]]));
-  for (const key of MM_KEYS) delete process.env[key];
+  saved = Object.fromEntries(OC_MM_KEYS.map((key) => [key, process.env[key]]));
+  for (const key of OC_MM_KEYS) delete process.env[key];
   console.error = (...args: unknown[]) => void errors.push(args.join(" "));
 });
 
 afterAll(async () => {
   console.error = realError;
-  for (const key of MM_KEYS) {
+  for (const key of OC_MM_KEYS) {
     const value = saved[key];
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
@@ -95,14 +95,14 @@ describe("plugin entry", () => {
 
   it("takes credentials from the environment when no options are given", async () => {
     const server = startMockMattermost();
-    process.env.MM_URL = server.url;
-    process.env.MM_TOKEN = "tok";
-    process.env.MM_TEAM = "my-team";
+    process.env.OC_MM_URL = server.url;
+    process.env.OC_MM_TOKEN = "tok";
+    process.env.OC_MM_TEAM = "my-team";
     try {
       const hooks = await plugin(input, undefined);
       expect(Object.keys(hooks.tool ?? {})).toHaveLength(13);
     } finally {
-      for (const key of MM_KEYS) delete process.env[key];
+      for (const key of OC_MM_KEYS) delete process.env[key];
       server.stop();
     }
   });
@@ -112,15 +112,15 @@ describe("plugin entry", () => {
     const project = await mkdtemp(join(tmpdir(), "oc-mm-project-"));
     await Bun.write(
       join(project, ".env.local"),
-      [`MM_URL=${server.url}`, "MM_TOKEN=tok", "MM_TEAM=my-team"].join("\n"),
+      [`OC_MM_URL=${server.url}`, "OC_MM_TOKEN=tok", "OC_MM_TEAM=my-team"].join("\n"),
     );
     try {
       const hooks = await plugin({ directory: project } as PluginInput, undefined);
       expect(Object.keys(hooks.tool ?? {})).toHaveLength(13);
       // The file's credentials stay out of the environment opencode hands to spawned processes.
-      for (const key of MM_KEYS) expect(process.env[key]).toBeUndefined();
+      for (const key of OC_MM_KEYS) expect(process.env[key]).toBeUndefined();
     } finally {
-      for (const key of MM_KEYS) delete process.env[key];
+      for (const key of OC_MM_KEYS) delete process.env[key];
       await rm(project, { recursive: true, force: true });
       server.stop();
     }
@@ -131,15 +131,15 @@ describe("plugin entry", () => {
     const project = await mkdtemp(join(tmpdir(), "oc-mm-project-"));
     await Bun.write(
       join(project, ".env.local"),
-      [`MM_URL=${server.url}`, "MM_TOKEN=tok", "MM_TEAM=from-file"].join("\n"),
+      [`OC_MM_URL=${server.url}`, "OC_MM_TOKEN=tok", "OC_MM_TEAM=from-file"].join("\n"),
     );
-    process.env.MM_TEAM = "my-team";
+    process.env.OC_MM_TEAM = "my-team";
     try {
       const hooks = await plugin({ directory: project } as PluginInput, undefined);
       expect(Object.keys(hooks.tool ?? {})).toHaveLength(13);
       expect(server.paths).toContain("/api/v4/teams/name/my-team");
     } finally {
-      for (const key of MM_KEYS) delete process.env[key];
+      for (const key of OC_MM_KEYS) delete process.env[key];
       await rm(project, { recursive: true, force: true });
       server.stop();
     }
