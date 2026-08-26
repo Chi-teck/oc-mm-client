@@ -3,7 +3,7 @@ import type { Plugin, PluginOptions } from "@opencode-ai/plugin";
 import { createMattermostClient } from "./mattermost/client.js";
 import { createMattermostContext, withTimeout } from "./mattermost/context.js";
 import { loadEnvFile, type MattermostEnv, readMattermostEnv } from "./mattermost/env.js";
-import { createTools } from "./mattermost/tools/registry.js";
+import { createTools, describeClientError } from "./mattermost/tools/registry.js";
 
 const STARTUP_TIMEOUT_MS = 10_000;
 
@@ -49,8 +49,12 @@ export default (async (input, options) => {
       `${url} did not respond within ${STARTUP_TIMEOUT_MS}ms`,
     );
   } catch (error) {
+    // Restate it the way every tool call does: a `ClientError` carries the server's sentence and
+    // nothing else, and that sentence is empty when the body is not Mattermost's JSON envelope —
+    // which printed a bare "oc-mm-client disabled:" with no reason at all.
+    const described = describeClientError(error);
     console.error(
-      `oc-mm-client disabled: ${error instanceof Error ? error.message : String(error)}`,
+      `oc-mm-client disabled: ${described instanceof Error ? described.message : String(described)}`,
     );
     return {};
   }

@@ -21,7 +21,9 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
-export function startMockMattermost(options: { unauthorized?: boolean } = {}): MockServer {
+export function startMockMattermost(
+  options: { unauthorized?: boolean; silentError?: boolean } = {},
+): MockServer {
   const paths: string[] = [];
   const server = Bun.serve({
     port: 0,
@@ -31,6 +33,9 @@ export function startMockMattermost(options: { unauthorized?: boolean } = {}): M
       if (options.unauthorized) {
         return json({ message: "Invalid or expired session", status_code: 401 }, 401);
       }
+      // A failure whose body carries no `message`, e.g. from a proxy in front of Mattermost.
+      // `ClientError.message` is then empty and only the status and endpoint identify it.
+      if (options.silentError) return json({ status_code: 500 }, 500);
       if (pathname === "/api/v4/users/me") return json(MOCK_ME);
       if (pathname === `/api/v4/teams/name/${MOCK_TEAM.name}`) return json(MOCK_TEAM);
       if (pathname === `/api/v4/users/me/teams/${MOCK_TEAM.id}/channels`)

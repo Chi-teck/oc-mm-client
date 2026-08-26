@@ -80,6 +80,19 @@ describe("plugin entry", () => {
     }
   });
 
+  it("names the status and endpoint when the server sends no error message", async () => {
+    const server = startMockMattermost({ silentError: true });
+    try {
+      expect(await plugin(input, { url: server.url, token: "tok", team: "my-team" })).toEqual({});
+      expect(errors.join("\n")).toContain(
+        "oc-mm-client disabled: Mattermost API 500 /api/v4/users/me: the server sent no message",
+      );
+      expect(errors.join("\n")).not.toContain("disabled: \n");
+    } finally {
+      server.stop();
+    }
+  });
+
   it("takes credentials from the environment when no options are given", async () => {
     const server = startMockMattermost();
     process.env.MM_URL = server.url;
