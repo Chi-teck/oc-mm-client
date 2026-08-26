@@ -1,7 +1,15 @@
 import { basename, resolve } from "node:path";
 import { tool } from "@opencode-ai/plugin";
-import type { MattermostContext } from "../context.js";
+import { humanSize, type MattermostContext } from "../context.js";
 import { confirmWrite } from "./confirm.js";
+import { describeClientError } from "./registry.js";
+
+/** The server's `MaxFileSize`, or undefined when it cannot be read — then the check falls open. */
+async function maxFileSize(ctx: MattermostContext): Promise<number | undefined> {
+  const config = await ctx.clientConfig().catch(() => undefined);
+  const bytes = Number(config?.MaxFileSize);
+  return Number.isFinite(bytes) && bytes > 0 ? bytes : undefined;
+}
 
 async function uploadAttachments(
   ctx: MattermostContext,
@@ -9,8 +17,10 @@ async function uploadAttachments(
   attachments: string[],
   directory: string,
 ): Promise<string[]> {
-  // Check every path before uploading any: a missing second file would otherwise leave the
-  // first one orphaned on the server, since the post that would carry it is never created.
+  // Check every path before uploading any: a second file that is missing or over the server's
+  // limit would otherwise leave the first one orphaned, since the post that would carry it is
+  // never created. This only rules out the failures visible from here — the upload loop below
+  // still has to own the ones that are not.
   const blobs = attachments.map((attachment) => {
     const abs = resolve(directory, attachment);
     return { abs, blob: Bun.file(abs), attachment };
@@ -20,13 +30,34 @@ async function uploadAttachments(
       throw new Error(`Attachment not found: ${attachment} (resolved to ${abs})`);
     }
   }
+  const limit = await maxFileSize(ctx);
+  for (const { blob, attachment } of blobs) {
+    if (limit !== undefined && blob.size > limit) {
+      throw new Error(
+        `Attachment too large: ${attachment} is ${humanSize(blob.size)}, over the server limit of ${humanSize(limit)}`,
+      );
+    }
+  }
   const fileIds: string[] = [];
-  for (const { abs, blob } of blobs) {
+  for (const { abs, blob, attachment } of blobs) {
     const form = new FormData();
     form.append("channel_id", channelId);
     form.append("files", blob, basename(abs));
-    const response = await ctx.client.uploadFile(form);
-    for (const info of response.file_infos ?? []) fileIds.push(info.id);
+    try {
+      const response = await ctx.client.uploadFile(form);
+      for (const info of response.file_infos ?? []) fileIds.push(info.id);
+    } catch (error) {
+      // Mattermost deletes a file only with the post that carries it, so ids already uploaded
+      // stay on the server forever once this post is abandoned. Name them instead of leaving the
+      // caller to guess what was left behind.
+      if (!fileIds.length) throw error;
+      const described = describeClientError(error);
+      const reason = described instanceof Error ? described.message : String(described);
+      throw new Error(
+        `Uploaded ${fileIds.length} file(s), then ${attachment} failed — file ids ${fileIds.join(", ")} are orphaned on the server and cannot be deleted (Mattermost only deletes a file with the post that carries it). Cause: ${reason}`,
+        { cause: error },
+      );
+    }
   }
   return fileIds;
 }

@@ -1,7 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import { resolve } from "node:path";
-import type { Client4 } from "@mattermost/client";
+import { type Client4, ClientError } from "@mattermost/client";
 import type { ChannelMembership, ServerChannel } from "@mattermost/types/channels";
+import type { ClientConfig } from "@mattermost/types/config";
 import type { ToolContext } from "@opencode-ai/plugin";
 import { tool } from "@opencode-ai/plugin";
 import { createMattermostContext } from "../context.js";
@@ -42,6 +43,9 @@ interface MockState {
   createdPosts: unknown[];
   reactions: { user_id: string; emoji_name: string }[];
   membership: ChannelMembership;
+  clientConfig: Partial<ClientConfig> | undefined;
+  failUploadAt: number | undefined;
+  uploadError: unknown;
 }
 
 function mockClient(state: Partial<MockState> = {}): Client4 & { state: MockState } {
@@ -56,6 +60,9 @@ function mockClient(state: Partial<MockState> = {}): Client4 & { state: MockStat
       mention_count: 2,
       last_viewed_at: 1_700_000_000_000,
     } as ChannelMembership,
+    clientConfig: { MaxFileSize: "268435456" },
+    failUploadAt: undefined,
+    uploadError: new Error("upload failed"),
     ...state,
   };
   const rec = (name: string) => s.order.push(name);
@@ -87,8 +94,14 @@ function mockClient(state: Partial<MockState> = {}): Client4 & { state: MockStat
       rec("getChannelMember");
       return s.membership;
     },
+    getClientConfig: async () => {
+      rec("getClientConfig");
+      if (!s.clientConfig) throw new Error("config unavailable");
+      return s.clientConfig as ClientConfig;
+    },
     uploadFile: async (form: FormData) => {
       rec("uploadFile");
+      if (s.uploads.length === s.failUploadAt) throw s.uploadError;
       s.uploads.push(form);
       return { file_infos: [{ id: FILE_ID }], client_ids: ["c1"] };
     },
@@ -216,6 +229,78 @@ describe("mattermost_create_post", () => {
       ),
     ).rejects.toThrow("Attachment not found: nope.txt");
     expect(client.state.order).toEqual([]);
+  });
+
+  it("refuses an attachment over the server's MaxFileSize before uploading anything", async () => {
+    await Bun.write("local/tmp/attach.txt", "hello attachment");
+    const client = mockClient({ clientConfig: { MaxFileSize: "8" } });
+    const ctx = createMattermostContext(config, client);
+    await expect(
+      createPostTool(ctx).execute(
+        { channel: "my-channel", message: "x", attachments: ["attach.txt"] },
+        recordingCtx().tctx,
+      ),
+    ).rejects.toThrow("Attachment too large: attach.txt is 16 B, over the server limit of 8 B");
+    expect(client.state.order).toEqual(["getClientConfig"]);
+  });
+
+  it("uploads anyway when the server config cannot be read", async () => {
+    await Bun.write("local/tmp/attach.txt", "hello attachment");
+    const client = mockClient({ clientConfig: undefined });
+    const ctx = createMattermostContext(config, client);
+    await createPostTool(ctx).execute(
+      { channel: "my-channel", message: "x", attachments: ["attach.txt"] },
+      recordingCtx().tctx,
+    );
+    expect(client.state.order).toEqual(["getClientConfig", "uploadFile", "createPost"]);
+  });
+
+  it("names the orphaned file ids when a later upload fails", async () => {
+    await Bun.write("local/tmp/attach.txt", "hello attachment");
+    await Bun.write("local/tmp/attach2.txt", "second attachment");
+    const client = mockClient({
+      failUploadAt: 1,
+      uploadError: new ClientError(config.url, {
+        message: "The file(s) are too large to be uploaded.",
+        url: `${config.url}/api/v4/files`,
+        status_code: 413,
+      }),
+    });
+    const ctx = createMattermostContext(config, client);
+    await expect(
+      createPostTool(ctx).execute(
+        { channel: "my-channel", message: "x", attachments: ["attach.txt", "attach2.txt"] },
+        recordingCtx().tctx,
+      ),
+    ).rejects.toThrow(
+      `Uploaded 1 file(s), then attach2.txt failed — file ids ${FILE_ID} are orphaned on the server and cannot be deleted (Mattermost only deletes a file with the post that carries it). Cause: Mattermost API 413 /api/v4/files: The file(s) are too large to be uploaded.`,
+    );
+    expect(client.state.order).not.toContain("createPost");
+  });
+
+  it("rethrows a first-upload failure untouched, since nothing is orphaned", async () => {
+    await Bun.write("local/tmp/attach.txt", "hello attachment");
+    const failure = new Error("network reset");
+    const client = mockClient({ failUploadAt: 0, uploadError: failure });
+    const ctx = createMattermostContext(config, client);
+    await expect(
+      createPostTool(ctx).execute(
+        { channel: "my-channel", message: "x", attachments: ["attach.txt"] },
+        recordingCtx().tctx,
+      ),
+    ).rejects.toBe(failure);
+  });
+
+  it("fetches the server config once across posts", async () => {
+    await Bun.write("local/tmp/attach.txt", "hello attachment");
+    const client = mockClient();
+    const ctx = createMattermostContext(config, client);
+    const post = createPostTool(ctx);
+    const args = { channel: "my-channel", message: "twice", attachments: ["attach.txt"] };
+    await post.execute(args, recordingCtx().tctx);
+    await post.execute(args, recordingCtx().tctx);
+    expect(client.state.order.filter((call) => call === "getClientConfig")).toHaveLength(1);
+    expect(client.state.order.filter((call) => call === "uploadFile")).toHaveLength(2);
   });
 
   it("requires a message (zod)", () => {

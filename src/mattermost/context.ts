@@ -1,5 +1,6 @@
 import type { Client4 } from "@mattermost/client";
 import type { ServerChannel } from "@mattermost/types/channels";
+import type { ClientConfig } from "@mattermost/types/config";
 import type { FileInfo } from "@mattermost/types/files";
 import type { Post, PostList } from "@mattermost/types/posts";
 import type { Team } from "@mattermost/types/teams";
@@ -26,6 +27,7 @@ export interface MattermostContext {
   config: MattermostEnv;
   me(): Promise<UserProfile>;
   team(): Promise<Team>;
+  clientConfig(): Promise<ClientConfig>;
   resolveChannel(ref: string): Promise<ServerChannel>;
   usernames(userIds: string[]): Promise<Map<string, string>>;
   parseSince(input: string): number;
@@ -99,6 +101,7 @@ export function createMattermostContext(
 
   const channelCache = new Map<string, { channel: ServerChannel; expires: number }>();
   const userCache = new Map<string, { username: string; expires: number }>();
+  let serverConfig: { value: ClientConfig; expires: number } | undefined;
 
   function me(): Promise<UserProfile> {
     // Cache the promise so concurrent callers share one request, but drop it on failure so a
@@ -123,6 +126,14 @@ export function createMattermostContext(
         throw new Error(`Mattermost team not found: ${ref}`);
       }
     }
+  }
+
+  async function clientConfig(): Promise<ClientConfig> {
+    const now = Date.now();
+    if (serverConfig && serverConfig.expires > now) return serverConfig.value;
+    const value = await client.getClientConfig();
+    serverConfig = { value, expires: now + CACHE_TTL };
+    return value;
   }
 
   async function lookupChannel(ref: string): Promise<ServerChannel> {
@@ -239,6 +250,7 @@ export function createMattermostContext(
     config,
     me,
     team,
+    clientConfig,
     resolveChannel,
     usernames,
     parseSince: (input: string) => parseSince(input),
