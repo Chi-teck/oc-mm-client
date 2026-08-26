@@ -32,6 +32,14 @@ describe("createMattermostClient", () => {
     expect(captured?.headers.authorization?.toLowerCase()).toBe("bearer tok");
   });
 
+  it("strips trailing slashes and stray whitespace from the url", () => {
+    const base = (url: string) => createMattermostClient({ url, token: "tok" }).getBaseRoute();
+
+    expect(base("https://mm.example.com/")).toBe("https://mm.example.com/api/v4");
+    expect(base("https://mm.example.com///")).toBe("https://mm.example.com/api/v4");
+    expect(base("https://mm.example.com/\n")).toBe("https://mm.example.com/api/v4");
+  });
+
   it("asks for English so server errors do not come back in the instance's locale", async () => {
     let captured: Record<string, string> | undefined;
     mockFetch((_url, init) => {
