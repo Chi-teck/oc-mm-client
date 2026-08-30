@@ -25,6 +25,8 @@ export interface FormatOptions {
 export interface MattermostContext {
   client: Client4;
   config: MattermostEnv;
+  /** Absolute path from the `downloadDir` plugin option; unset means the default in `files.ts`. */
+  downloadDir?: string;
   me(): Promise<UserProfile>;
   team(): Promise<Team>;
   clientConfig(): Promise<ClientConfig>;
@@ -104,6 +106,7 @@ export function withTimeout<T>(promise: Promise<T>, ms: number, message: string)
 export function createMattermostContext(
   config: MattermostEnv,
   client: Client4 = createMattermostClient(config satisfies MattermostConfig),
+  options: { downloadDir?: string } = {},
 ): MattermostContext {
   let mePromise: Promise<UserProfile> | undefined;
   let teamPromise: Promise<Team> | undefined;
@@ -264,6 +267,7 @@ export function createMattermostContext(
   return {
     client,
     config,
+    downloadDir: options.downloadDir,
     me,
     team,
     clientConfig,

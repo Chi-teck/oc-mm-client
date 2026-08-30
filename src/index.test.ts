@@ -126,6 +126,108 @@ describe("plugin entry", () => {
     }
   });
 
+  it("resolves a relative downloadDir against the project directory, not the process cwd", async () => {
+    const server = startMockMattermost();
+    // A fresh directory, not `sandbox`: `beforeAll` chdirs into that one, so resolving against the
+    // cwd would produce the same string and the assertion would prove nothing.
+    const project = await mkdtemp(join(tmpdir(), "oc-mm-project-"));
+    try {
+      const hooks = await plugin({ directory: project } as PluginInput, {
+        url: server.url,
+        token: "tok",
+        team: "my-team",
+        downloadDir: "attachments",
+      });
+      const def = hooks.tool?.mattermost_get_file;
+      expect(def?.description).toContain(join(project, "attachments"));
+    } finally {
+      await rm(project, { recursive: true, force: true });
+      server.stop();
+    }
+  });
+
+  it("accepts a downloadDir whose `..` resolves back inside the project", async () => {
+    const server = startMockMattermost();
+    const project = await mkdtemp(join(tmpdir(), "oc-mm-project-"));
+    try {
+      const hooks = await plugin({ directory: project } as PluginInput, {
+        url: server.url,
+        token: "tok",
+        team: "my-team",
+        downloadDir: "attachments/../attachments",
+      });
+      const def = hooks.tool?.mattermost_get_file;
+      expect(def?.description).toContain(join(project, "attachments"));
+      expect(errors.join("\n")).not.toContain("downloadDir");
+    } finally {
+      await rm(project, { recursive: true, force: true });
+      server.stop();
+    }
+  });
+
+  it("refuses a downloadDir outside the project and keeps the default", async () => {
+    const server = startMockMattermost();
+    const project = await mkdtemp(join(tmpdir(), "oc-mm-project-"));
+    try {
+      const hooks = await plugin({ directory: project } as PluginInput, {
+        url: server.url,
+        token: "tok",
+        team: "my-team",
+        downloadDir: "../escape",
+      });
+      expect(Object.keys(hooks.tool ?? {})).toHaveLength(13);
+      expect(errors.join("\n")).toContain("ignoring downloadDir ../escape");
+      const def = hooks.tool?.mattermost_get_file;
+      expect(def?.description).toContain("<worktree>/.opencode/mm-files/");
+    } finally {
+      await rm(project, { recursive: true, force: true });
+      server.stop();
+    }
+  });
+
+  it("refuses an absolute downloadDir outside the project and keeps the default", async () => {
+    const server = startMockMattermost();
+    const project = await mkdtemp(join(tmpdir(), "oc-mm-project-"));
+    try {
+      const hooks = await plugin({ directory: project } as PluginInput, {
+        url: server.url,
+        token: "tok",
+        team: "my-team",
+        downloadDir: "/etc/mm-files",
+      });
+      expect(Object.keys(hooks.tool ?? {})).toHaveLength(13);
+      expect(errors.join("\n")).toContain("ignoring downloadDir /etc/mm-files");
+      const def = hooks.tool?.mattermost_get_file;
+      expect(def?.description).toContain("<worktree>/.opencode/mm-files/");
+    } finally {
+      await rm(project, { recursive: true, force: true });
+      server.stop();
+    }
+  });
+
+  it("accepts a downloadDir inside the worktree but outside the session directory", async () => {
+    const server = startMockMattermost();
+    const project = await mkdtemp(join(tmpdir(), "oc-mm-project-"));
+    try {
+      // opencode started in a subdirectory: `..` leaves the session directory but not the worktree,
+      // which is the root `read` permissions are resolved against.
+      const hooks = await plugin(
+        { directory: join(project, "sub"), worktree: project } as PluginInput,
+        {
+          url: server.url,
+          token: "tok",
+          team: "my-team",
+          downloadDir: "../attachments",
+        },
+      );
+      const def = hooks.tool?.mattermost_get_file;
+      expect(def?.description).toContain(join(project, "attachments"));
+    } finally {
+      await rm(project, { recursive: true, force: true });
+      server.stop();
+    }
+  });
+
   it("lets the real environment win over .env.local", async () => {
     const server = startMockMattermost();
     const project = await mkdtemp(join(tmpdir(), "oc-mm-project-"));

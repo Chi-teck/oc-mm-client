@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import { resolve } from "node:path";
 import type { ToolContext } from "@opencode-ai/plugin";
 import { createMattermostContext } from "../context.js";
 import type { MattermostEnv } from "../env.js";
@@ -206,5 +207,52 @@ describe("mattermost_get_file", () => {
     const output = typeof result === "string" ? result : result.output;
     expect(output).toContain(".._evil.txt");
     await cleanScratch();
+  });
+
+  it("writes into a configured directory, creating it", async () => {
+    await cleanScratch();
+    mockFetch(
+      () =>
+        new Response("data", {
+          headers: { "Content-Disposition": 'attachment; filename="report.csv"' },
+        }),
+    );
+    const downloadDir = resolve(SCRATCH, "attachments");
+    const ctx = createMattermostContext(config, undefined, { downloadDir });
+    const result = await getFileTool(ctx).execute({ file_id: FILE_ID }, toolCtx(SCRATCH));
+    const output = typeof result === "string" ? result : result.output;
+    expect(output).toContain(`${downloadDir}/report.csv`);
+    expect(await Bun.file(`${downloadDir}/report.csv`).text()).toBe("data");
+    // The default is not created alongside it: a configured directory is the only destination.
+    expect(await Bun.file(`${SCRATCH}/.opencode/mm-files/report.csv`).exists()).toBe(false);
+    await cleanScratch();
+  });
+
+  it("reports a configured directory it cannot create, without relocating", async () => {
+    await cleanScratch();
+    mockFetch(() => new Response("data", { headers: { "Content-Disposition": "x.txt" } }));
+    const ctx = createMattermostContext(config, undefined, {
+      downloadDir: "/proc/nonexistent/mm-files",
+    });
+    await expect(
+      getFileTool(ctx).execute({ file_id: FILE_ID, name: "saved.txt" }, toolCtx(SCRATCH)),
+    ).rejects.toThrow("Download directory /proc/nonexistent/mm-files could not be created");
+    expect(await Bun.file(`${SCRATCH}/.opencode/mm-files/saved.txt`).exists()).toBe(false);
+    await cleanScratch();
+  });
+
+  it("names the configured directory in the description", async () => {
+    const downloadDir = resolve(SCRATCH, "attachments");
+    const ctx = createMattermostContext(config, undefined, { downloadDir });
+    expect(getFileTool(ctx).description).toBe(
+      `Download a Mattermost file attachment by id into ${downloadDir} and return the saved path.`,
+    );
+  });
+
+  it("keeps the default description when no directory is configured", () => {
+    const ctx = createMattermostContext(config);
+    expect(getFileTool(ctx).description).toBe(
+      "Download a Mattermost file attachment by id into <worktree>/.opencode/mm-files/ and return the saved path.",
+    );
   });
 });

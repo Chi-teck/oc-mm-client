@@ -59,6 +59,19 @@ They can also be passed inline as plugin options, which take precedence over the
 ]
 ```
 
+`downloadDir` moves where `mattermost_get_file` saves attachments; the default is
+`.opencode/mm-files/`. A relative value resolves against the opencode project directory — the same
+root `.env.local` is read from — and is created on the first download. It may not escape the git
+worktree, since opencode resolves the agent's `read` permission against it: a file saved outside is
+one the agent cannot open. If it does escape, the plugin logs one line and keeps the default.
+Existing downloads are not moved.
+
+```json
+"plugin": [
+  ["github:Chi-teck/oc-mm-client#v0.2.0", { "downloadDir": "attachments" }]
+]
+```
+
 Missing or rejected credentials are not fatal: the plugin logs the reason and registers no tools.
 An unreachable host gets 10 seconds before the plugin gives up, so it cannot hang opencode's
 startup.
@@ -83,7 +96,7 @@ Use real environment variables or plugin options instead.
 | `mattermost_read_unread` | Unread and mention counts per channel, or the unread posts of one channel. |
 | `mattermost_search` | Search posts or files across the team. |
 | `mattermost_list_members` | List channel members, optionally fuzzy-matched by username. |
-| `mattermost_get_file` | Download an attachment into `.opencode/mm-files/` and return the saved path. |
+| `mattermost_get_file` | Download an attachment into `.opencode/mm-files/` (or `downloadDir`) and return the saved path. |
 | `mattermost_mark_read` | Clear a channel's unread state. |
 | `mattermost_create_post` | Post a message, optionally as a thread reply and with file attachments. |
 | `mattermost_react` | Add or remove an emoji reaction on a post. |

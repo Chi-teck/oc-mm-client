@@ -24,6 +24,18 @@ async function ensureDownloadDir(roots: string[]): Promise<string> {
   throw lastError;
 }
 
+// A configured directory never falls back. The walk above exists because nobody named a directory;
+// once somebody has, writing to a different one is a silent surprise — and the path is in this
+// tool's own description, so the caller would be told one place and handed another.
+async function ensureConfiguredDir(dir: string): Promise<string> {
+  try {
+    await mkdir(dir, { recursive: true });
+  } catch (error) {
+    throw new Error(`Download directory ${dir} could not be created`, { cause: error });
+  }
+  return dir;
+}
+
 async function uniquePath(dir: string, filename: string): Promise<string> {
   const ext = extname(filename);
   const base = basename(filename, ext);
@@ -34,9 +46,11 @@ async function uniquePath(dir: string, filename: string): Promise<string> {
 }
 
 export function getFileTool(ctx: MattermostContext) {
+  // What the model is told is where the file will be: a configured directory the description does
+  // not name teaches the caller a path that then shows up in whatever it writes next.
+  const where = ctx.downloadDir ?? "<worktree>/.opencode/mm-files/";
   return tool({
-    description:
-      "Download a Mattermost file attachment by id into <worktree>/.opencode/mm-files/ and return the saved path.",
+    description: `Download a Mattermost file attachment by id into ${where} and return the saved path.`,
     args: {
       file_id: tool.schema.string().describe("26-char file id"),
       name: tool.schema.string().optional().describe("Preferred file name"),
@@ -78,7 +92,9 @@ export function getFileTool(ctx: MattermostContext) {
       // Matches both `filename="x"` and the RFC 5987 `filename*=UTF-8''x` form.
       const fromHeader = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(disposition)?.[1];
       const preferred = (name ?? fromHeader ?? `${fileId}.bin`).replace(/[/\\]/g, "_");
-      const dir = await ensureDownloadDir([tctx.worktree, tctx.directory, process.cwd()]);
+      const dir = ctx.downloadDir
+        ? await ensureConfiguredDir(ctx.downloadDir)
+        : await ensureDownloadDir([tctx.worktree, tctx.directory, process.cwd()]);
       const target = await uniquePath(dir, preferred);
       await Bun.write(target, response);
       return {
