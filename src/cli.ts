@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { type ToolContext, type ToolDefinition, tool } from "@opencode-ai/plugin";
 import { createMattermostContext } from "./mattermost/context.js";
-import { loadEnvFile, type MattermostEnv, readMattermostEnv } from "./mattermost/env.js";
+import { loadEnvFile, type MattermostEnv, mergeEnv, readMattermostEnv } from "./mattermost/env.js";
 import { createTools } from "./mattermost/tools/registry.js";
 
 type ToolMap = Record<string, ToolDefinition>;
@@ -134,7 +134,7 @@ export async function main(argv: string[]): Promise<number> {
     return 1;
   }
 
-  const env = readMattermostEnv({ ...loadEnvFile(), ...process.env });
+  const env = readMattermostEnv(mergeEnv(loadEnvFile()));
   const tools = createTools(createMattermostContext(env));
   const def = resolveTool(tools, name);
   if (!def) {

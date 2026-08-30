@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { loadEnvFile, readMattermostEnv } from "./env.js";
+import { loadEnvFile, mergeEnv, readMattermostEnv } from "./env.js";
 
 describe("readMattermostEnv", () => {
   it("reads OC_MM_* variables", () => {
@@ -26,9 +26,11 @@ describe("readMattermostEnv", () => {
     expect(() => readMattermostEnv(env)).toThrow("Set OC_MM_URL, OC_MM_TOKEN and OC_MM_TEAM");
   });
 
-  it("throws naming all three vars when team is missing", () => {
+  it("names only the vars that are missing", () => {
+    // Naming the two that are already set would send the user auditing settings that are fine.
     const env = { OC_MM_URL: "https://mm.example.com", OC_MM_TOKEN: "tok" };
-    expect(() => readMattermostEnv(env)).toThrow("OC_MM_TEAM");
+    expect(() => readMattermostEnv(env)).toThrow("Set OC_MM_TEAM");
+    expect(() => readMattermostEnv({ OC_MM_TOKEN: "tok" })).toThrow("Set OC_MM_URL and OC_MM_TEAM");
   });
 
   it("throws when missing", () => {
@@ -80,11 +82,44 @@ describe("loadEnvFile", () => {
       path,
       ["OC_MM_URL=https://file.example.com", 'OC_MM_TOKEN="file-tok"'].join("\n"),
     );
-    const shellEnv = { OC_MM_TOKEN: "shell-tok" };
     try {
       // The composition both entry points use: file first, real environment last.
-      const merged: Record<string, string> = { ...loadEnvFile(path), ...shellEnv };
-      expect(merged).toEqual({ OC_MM_URL: "https://file.example.com", OC_MM_TOKEN: "shell-tok" });
+      expect(mergeEnv(loadEnvFile(path), { OC_MM_TOKEN: "shell-tok" })).toEqual({
+        OC_MM_URL: "https://file.example.com",
+        OC_MM_TOKEN: "shell-tok",
+      });
+    } finally {
+      await Bun.write(path, "");
+    }
+  });
+
+  it("strips an unquoted trailing comment but keeps a quoted #", async () => {
+    const path = "local/tmp/.env.local.comment";
+    await Bun.write(
+      path,
+      [
+        "OC_MM_TOKEN=realtoken  # my token",
+        'OC_MM_URL="https://file.example.com/#x" # note',
+        "OC_MM_TEAM=a#b",
+      ].join("\n"),
+    );
+    try {
+      // The note used to travel with the token, and the 401 that followed read as an expired one.
+      expect(loadEnvFile(path)).toEqual({
+        OC_MM_TOKEN: "realtoken",
+        OC_MM_URL: "https://file.example.com/#x",
+        OC_MM_TEAM: "a#b",
+      });
+    } finally {
+      await Bun.write(path, "");
+    }
+  });
+
+  it("lets the last occurrence of a key win", async () => {
+    const path = "local/tmp/.env.local.duplicate";
+    await Bun.write(path, ["OC_MM_TEAM=stale", "OC_MM_TEAM=corrected"].join("\n"));
+    try {
+      expect(loadEnvFile(path)).toEqual({ OC_MM_TEAM: "corrected" });
     } finally {
       await Bun.write(path, "");
     }
@@ -105,5 +140,27 @@ describe("loadEnvFile", () => {
 
   it("silently skips missing files", () => {
     expect(loadEnvFile("local/tmp/definitely-missing.env")).toEqual({});
+  });
+});
+
+describe("mergeEnv", () => {
+  it("lets a real variable win over the file", () => {
+    expect(mergeEnv({ OC_MM_TEAM: "from-file" }, { OC_MM_TEAM: "from-shell" })).toEqual({
+      OC_MM_TEAM: "from-shell",
+    });
+  });
+
+  it("keeps the file's value when the real variable is empty", () => {
+    // `export OC_MM_TEAM=` is an accident, not a choice; a spread would blank the file's team and
+    // the missing-key check would then reject the url and token that came with it.
+    const merged = mergeEnv(
+      { OC_MM_URL: "https://file.example.com", OC_MM_TOKEN: "file-tok", OC_MM_TEAM: "from-file" },
+      { OC_MM_TEAM: "", OC_MM_TOKEN: "  " },
+    );
+    expect(readMattermostEnv(merged)).toEqual({
+      url: "https://file.example.com",
+      token: "file-tok",
+      team: "from-file",
+    });
   });
 });

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import type { ToolContext } from "@opencode-ai/plugin";
 import { createMattermostContext } from "../context.js";
 import type { MattermostEnv } from "../env.js";
@@ -236,8 +236,120 @@ describe("mattermost_get_file", () => {
     });
     await expect(
       getFileTool(ctx).execute({ file_id: FILE_ID, name: "saved.txt" }, toolCtx(SCRATCH)),
-    ).rejects.toThrow("Download directory /proc/nonexistent/mm-files could not be created");
+    ).rejects.toThrow(
+      /^Download directory \/proc\/nonexistent\/mm-files could not be created \(E[A-Z]+\)$/,
+    );
     expect(await Bun.file(`${SCRATCH}/.opencode/mm-files/saved.txt`).exists()).toBe(false);
+    await cleanScratch();
+  });
+
+  it("names the OS reason when the configured directory is a regular file", async () => {
+    await cleanScratch();
+    mockFetch(() => new Response("data"));
+    const blocker = resolve(SCRATCH, "attachments");
+    await Bun.write(blocker, "in the way");
+    const ctx = createMattermostContext(config, undefined, {
+      downloadDir: join(blocker, "files"),
+    });
+    await expect(
+      getFileTool(ctx).execute({ file_id: FILE_ID, name: "saved.txt" }, toolCtx(SCRATCH)),
+    ).rejects.toThrow(`could not be created (ENOTDIR)`);
+    await cleanScratch();
+  });
+
+  it("cancels the body instead of leaking it when the directory cannot be created", async () => {
+    await cleanScratch();
+    let cancelled = false;
+    mockFetch(
+      () =>
+        new Response(
+          new ReadableStream({
+            start: (controller) => controller.enqueue(new TextEncoder().encode("data")),
+            cancel: () => {
+              cancelled = true;
+            },
+          }),
+        ),
+    );
+    const ctx = createMattermostContext(config, undefined, {
+      downloadDir: "/proc/nonexistent/mm-files",
+    });
+    await expect(
+      getFileTool(ctx).execute({ file_id: FILE_ID, name: "saved.txt" }, toolCtx(SCRATCH)),
+    ).rejects.toThrow("could not be created");
+    expect(cancelled).toBe(true);
+    await cleanScratch();
+  });
+
+  it("cancels the body when the download is over the size ceiling", async () => {
+    await cleanScratch();
+    let cancelled = false;
+    mockFetch(
+      () =>
+        new Response(
+          new ReadableStream({
+            cancel: () => {
+              cancelled = true;
+            },
+          }),
+          { headers: { "Content-Length": String(256 * 1024 * 1024 + 1) } },
+        ),
+    );
+    const ctx = createMattermostContext(config);
+    await expect(getFileTool(ctx).execute({ file_id: FILE_ID }, toolCtx(SCRATCH))).rejects.toThrow(
+      "over the 256.0 MB limit",
+    );
+    expect(cancelled).toBe(true);
+    await cleanScratch();
+  });
+
+  it("gives concurrent downloads of one name a file each", async () => {
+    await cleanScratch();
+    let n = 0;
+    mockFetch(() => new Response(`body-${n++}`));
+    const ctx = createMattermostContext(config);
+    const results = await Promise.all([
+      getFileTool(ctx).execute({ file_id: FILE_ID, name: "notes.txt" }, toolCtx(SCRATCH)),
+      getFileTool(ctx).execute({ file_id: FILE_ID, name: "notes.txt" }, toolCtx(SCRATCH)),
+    ]);
+    const paths = results.map((r) => (typeof r === "string" ? r : r.output).split(" ")[1] ?? "");
+    expect(new Set(paths).size).toBe(2);
+    const bodies = await Promise.all(paths.map((p) => Bun.file(p).text()));
+    expect(new Set(bodies)).toEqual(new Set(["body-0", "body-1"]));
+    await cleanScratch();
+  });
+
+  it("writes a binary body byte for byte", async () => {
+    await cleanScratch();
+    const bytes = new Uint8Array(1024);
+    for (let i = 0; i < bytes.length; i++) bytes[i] = (i * 7) % 256;
+    mockFetch(() => new Response(bytes));
+    const ctx = createMattermostContext(config);
+    await getFileTool(ctx).execute({ file_id: FILE_ID, name: "blob.bin" }, toolCtx(SCRATCH));
+    const saved = new Uint8Array(
+      await Bun.file(`${SCRATCH}/.opencode/mm-files/blob.bin`).arrayBuffer(),
+    );
+    expect(saved).toEqual(bytes);
+    await cleanScratch();
+  });
+
+  it("switches to a random suffix once the sequential names run out", async () => {
+    await cleanScratch();
+    mockFetch(() => new Response("new"));
+    const dir = `${SCRATCH}/.opencode/mm-files`;
+    await Promise.all(
+      Array.from({ length: 100 }, (_, i) =>
+        Bun.write(`${dir}/${i === 0 ? "notes.txt" : `notes-${i}.txt`}`, "old"),
+      ),
+    );
+    const ctx = createMattermostContext(config);
+    const result = await getFileTool(ctx).execute(
+      { file_id: FILE_ID, name: "notes.txt" },
+      toolCtx(SCRATCH),
+    );
+    const output = typeof result === "string" ? result : result.output;
+    expect(output).not.toContain("notes-100.txt");
+    expect(output).toMatch(/notes-[a-z0-9]+\.txt/);
     await cleanScratch();
   });
 

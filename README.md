@@ -63,8 +63,12 @@ They can also be passed inline as plugin options, which take precedence over the
 `.opencode/mm-files/`. A relative value resolves against the opencode project directory — the same
 root `.env.local` is read from — and is created on the first download. It may not escape the git
 worktree, since opencode resolves the agent's `read` permission against it: a file saved outside is
-one the agent cannot open. If it does escape, the plugin logs one line and keeps the default.
-Existing downloads are not moved.
+one the agent cannot open. Containment is checked after symlinks are resolved, so a directory that
+is itself a link pointing outside the worktree is refused as well. The worktree root itself is
+refused — attachments would land among the tracked sources — and so is anything inside `.git`. A
+`downloadDir` that is not a string in `opencode.json` is refused the same way rather than ignored
+silently. In every one of these cases the plugin logs one line and keeps the default; none of them
+is fatal. Existing downloads are not moved.
 
 ```json
 "plugin": [
