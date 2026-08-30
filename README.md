@@ -21,7 +21,7 @@ mkdir -p .opencode/mm-files
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": [["github:Chi-teck/oc-mm-client#v0.2.0", { "downloadDir": ".opencode/mm-files" }]],
+  "plugin": [["github:Chi-teck/oc-mm-client#v0.3.0", { "downloadDir": ".opencode/mm-files" }]],
   "permission": {
     "mattermost_create_post": "ask",
     "mattermost_react": "ask",
@@ -32,20 +32,14 @@ mkdir -p .opencode/mm-files
 }
 ```
 
-`downloadDir` is required, and the directory has to exist before opencode starts — see
-[Configuration](#configuration).
-
-The `#v0.2.0` tag is deliberate. A bare `github:Chi-teck/oc-mm-client` tracks the default branch,
+The `#v0.3.0` tag is deliberate. A bare `github:Chi-teck/oc-mm-client` tracks the default branch,
 so an unrelated push changes the code under a running install. opencode caches by the literal spec
-string, so bumping the tag is also what triggers a re-download — upgrading is a one-line edit, with
-no cache to clear.
+string, so bumping the tag is also what triggers a re-download.
 
-Do not skip the `permission` block. The write tools raise a permission request, but with no
-matching rule opencode's default allow-all approves it silently. The plugin has no channel or
-user allowlist of its own, so these rules are the only enforcement point.
-
-`mattermost_api` is the one that matters most: it reaches every endpoint the token can, so without
-a rule a raw `DELETE` goes through unattended. It asks only for non-GET requests; reads run
+Do not skip the `permission` block. The write tools raise a permission request, but with no matching
+rule opencode's default allow-all approves it silently, and the plugin has no channel or user
+allowlist of its own. `mattermost_api` matters most: it reaches every endpoint the token can, so
+without a rule a raw `DELETE` goes through unattended. It asks only for non-GET requests; reads run
 unprompted like the other read tools.
 
 ## Configuration
@@ -58,46 +52,46 @@ export OC_MM_TOKEN=your-personal-access-token
 export OC_MM_TEAM=my-team
 ```
 
-They can also be passed inline as plugin options, which take precedence over the environment:
+Every setting can also be passed inline as a plugin option, which takes precedence over the
+environment:
 
 ```json
 {
-    "plugin": [
-        ["github:Chi-teck/oc-mm-client#v0.2.0", { "url": "https://mattermost.example.com", "token": "…", "team": "…" }]
+  "plugin": [
+    [
+      "github:Chi-teck/oc-mm-client#v0.3.0",
+      {
+        "url": "https://mattermost.example.com",
+        "token": "…",
+        "team": "…",
+        "downloadDir": "attachments"
+      }
     ]
+  ]
 }
 ```
 
-`downloadDir` says where `mattermost_get_file` saves attachments. It has no default and no
-environment variable: the plugin does not start without it, because a client that cannot agree with
-you on where files land is one you would rather find out about at startup than after an attachment
-has gone somewhere unexpected.
+`downloadDir` says where `mattermost_get_file` saves attachments. It is the one setting with no
+default and no environment variable: the plugin does not start without it, because a client that
+cannot agree with you on where files land is one you would rather find out about at startup than
+after an attachment has gone somewhere unexpected. A relative value resolves against the opencode
+project directory — the same root `.env.local` is read from — and it has to name a directory that:
 
-```json
-{
-    "plugin": [
-        ["github:Chi-teck/oc-mm-client#v0.2.0", { "downloadDir": "attachments" }]
-    ]
-}
-```
+- already exists and is writable; the plugin never creates it, so a typo cannot quietly become a
+  second empty directory next to the one you meant;
+- stays inside the git worktree, both as written and after symlinks are resolved, since opencode
+  resolves the agent's `read` permission against it: a file saved outside is one the agent cannot
+  open;
+- is neither the worktree root — attachments would land among the tracked sources — nor anything
+  inside `.git`.
 
-A relative value resolves against the opencode project directory — the same root `.env.local` is
-read from. The directory must already exist, be a directory, and be writable; the plugin never
-creates it, so a typo cannot quietly become a second empty directory next to the one you meant. It
-may not escape the git worktree, since opencode resolves the agent's `read` permission against it: a
-file saved outside is one the agent cannot open. Containment is checked both as written and after
-symlinks are resolved, so a directory that is itself a link pointing outside the worktree is refused
-as well. The worktree root itself is refused — attachments would land among the tracked sources —
-and so is anything inside `.git`. A value that is not a string, or is blank, is refused rather than
-ignored silently.
-
-None of this is patched over with a fallback: every one of these mistakes disables the plugin, with
-one line in the log naming the value, the path it resolved to, and what is wrong with it.
-
-Missing or rejected credentials get the same treatment, and the two are reported together in that
-one line, so a config with a mistake in each does not cost two restarts. Nothing here ever throws
-into opencode's own startup: the plugin logs and registers no tools. An unreachable host gets 10
-seconds before it gives up, so it cannot hang the session either.
+A value that is not a string, or is blank, is refused rather than ignored silently. None of this is
+patched over with a fallback: every one of these mistakes disables the plugin, with one line in the
+log naming the value, the path it resolved to, and what is wrong with it. Missing or rejected
+credentials get the same treatment, and the two are reported together in that one line, so a config
+with a mistake in each does not cost two restarts. Nothing here ever throws into opencode's own
+startup: the plugin logs and registers no tools. An unreachable host gets 10 seconds before it gives
+up, so it cannot hang the session either.
 
 Every request asks for English (`Accept-Language: en`). Mattermost picks the language of its error
 messages from that header alone — not from the token user's locale — so on a server whose default
@@ -147,23 +141,13 @@ cp .env.example .env.local
 mkdir -p local/mm-files
 ```
 
-Set `OC_MM_URL`, `OC_MM_TOKEN` and `OC_MM_TEAM` there; real environment variables take precedence over the
-file. `.opencode/` is not tracked, so create `.opencode/opencode.json` yourself — it registers the
-working tree as a plugin instead of the git spec, points `downloadDir` at the untracked `local/`
-area, and marks the write tools as `ask`:
+Set `OC_MM_URL`, `OC_MM_TOKEN` and `OC_MM_TEAM` there; real environment variables take precedence
+over the file. `.opencode/` is not tracked, so create `.opencode/opencode.json` yourself: the same
+config as in [Install](#install), keeping the `permission` block, with the plugin entry pointing at
+the working tree instead of the git spec and `downloadDir` at the untracked `local/` area.
 
 ```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "plugin": [["../src/index.ts", { "downloadDir": "local/mm-files" }]],
-  "permission": {
-    "mattermost_create_post": "ask",
-    "mattermost_react": "ask",
-    "mattermost_edit_post": "ask",
-    "mattermost_dm": "ask",
-    "mattermost_api": "ask"
-  }
-}
+"plugin": [["../src/index.ts", { "downloadDir": "local/mm-files" }]]
 ```
 
 Restart opencode after changing anything under `.opencode/`.
