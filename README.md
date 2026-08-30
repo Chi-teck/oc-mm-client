@@ -61,9 +61,11 @@ export OC_MM_TEAM=my-team
 They can also be passed inline as plugin options, which take precedence over the environment:
 
 ```json
-"plugin": [
-  ["github:Chi-teck/oc-mm-client#v0.2.0", { "url": "https://mattermost.example.com", "token": "…", "team": "…" }]
-]
+{
+    "plugin": [
+        ["github:Chi-teck/oc-mm-client#v0.2.0", { "url": "https://mattermost.example.com", "token": "…", "team": "…" }]
+    ]
+}
 ```
 
 `downloadDir` says where `mattermost_get_file` saves attachments. It has no default and no
@@ -72,9 +74,11 @@ you on where files land is one you would rather find out about at startup than a
 has gone somewhere unexpected.
 
 ```json
-"plugin": [
-  ["github:Chi-teck/oc-mm-client#v0.2.0", { "downloadDir": "attachments" }]
-]
+{
+    "plugin": [
+        ["github:Chi-teck/oc-mm-client#v0.2.0", { "downloadDir": "attachments" }]
+    ]
+}
 ```
 
 A relative value resolves against the opencode project directory — the same root `.env.local` is
@@ -140,16 +144,18 @@ Real-time WebSocket events are not supported yet; every read goes through the RE
 ```sh
 bun install
 cp .env.example .env.local
+mkdir -p local/mm-files
 ```
 
 Set `OC_MM_URL`, `OC_MM_TOKEN` and `OC_MM_TEAM` there; real environment variables take precedence over the
 file. `.opencode/` is not tracked, so create `.opencode/opencode.json` yourself — it registers the
-working tree as a plugin instead of the git spec, and marks the write tools as `ask`:
+working tree as a plugin instead of the git spec, points `downloadDir` at the untracked `local/`
+area, and marks the write tools as `ask`:
 
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["../src/index.ts"],
+  "plugin": [["../src/index.ts", { "downloadDir": "local/mm-files" }]],
   "permission": {
     "mattermost_create_post": "ask",
     "mattermost_react": "ask",
