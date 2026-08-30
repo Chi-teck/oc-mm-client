@@ -16,25 +16,15 @@ const SEQUENTIAL_NAMES = 100;
 // there so a name that can never be claimed ends the download instead of spinning forever.
 const MAX_NAME_ATTEMPTS = SEQUENTIAL_NAMES + 10;
 
-// Roots come in preference order: the worktree may be missing or read-only, so keep trying.
-async function ensureDownloadDir(roots: string[]): Promise<string> {
-  let lastError: unknown;
-  for (const root of new Set(roots)) {
-    const dir = resolve(root, ".opencode/mm-files");
-    try {
-      await mkdir(dir, { recursive: true });
-      return dir;
-    } catch (error) {
-      lastError = error;
-    }
-  }
-  throw lastError;
-}
+// Only the CLI arrives without a configured directory: the plugin requires the `downloadDir` option
+// and checks it before it registers anything. There `worktree` is the process cwd.
+const DEFAULT_DIR = ".opencode/mm-files";
 
-// A configured directory never falls back. The walk above exists because nobody named a directory;
-// once somebody has, writing to a different one is a silent surprise — and the path is in this
-// tool's own description, so the caller would be told one place and handed another.
-async function ensureConfiguredDir(dir: string): Promise<void> {
+// The directory is never traded for another one that happens to work: the path is in this tool's own
+// description, so the caller would be told one place and handed another. The plugin has already
+// checked its directory at startup, which leaves this covering the CLI's first download and the
+// directory somebody removed mid-session.
+async function ensureDir(dir: string): Promise<void> {
   try {
     await mkdir(dir, { recursive: true });
   } catch (error) {
@@ -86,7 +76,7 @@ async function discardBody(response: Response): Promise<void> {
 export function getFileTool(ctx: MattermostContext) {
   // What the model is told is where the file will be: a configured directory the description does
   // not name teaches the caller a path that then shows up in whatever it writes next.
-  const where = ctx.downloadDir ?? "<worktree>/.opencode/mm-files/";
+  const where = ctx.downloadDir ?? `<worktree>/${DEFAULT_DIR}/`;
   return tool({
     description: `Download a Mattermost file attachment by id into ${where} and return the saved path.`,
     args: {
@@ -131,11 +121,10 @@ export function getFileTool(ctx: MattermostContext) {
       // Matches both `filename="x"` and the RFC 5987 `filename*=UTF-8''x` form.
       const fromHeader = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(disposition)?.[1];
       const preferred = (name ?? fromHeader ?? `${fileId}.bin`).replace(/[/\\]/g, "_");
+      const dir = ctx.downloadDir ?? resolve(tctx.worktree, DEFAULT_DIR);
       let target: string;
       try {
-        let dir = ctx.downloadDir;
-        if (dir) await ensureConfiguredDir(dir);
-        else dir = await ensureDownloadDir([tctx.worktree, tctx.directory, process.cwd()]);
+        await ensureDir(dir);
         target = await writeUnique(dir, preferred, response);
       } catch (error) {
         await discardBody(response);

@@ -14,10 +14,14 @@ Requirements: [Bun](https://bun.sh) 1.0+, opencode 1.18+, `git` on the machine, 
 The plugin is not on npm. Point `opencode.json` at the git repository; opencode installs it on
 startup.
 
+```sh
+mkdir -p .opencode/mm-files
+```
+
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["github:Chi-teck/oc-mm-client#v0.2.0"],
+  "plugin": [["github:Chi-teck/oc-mm-client#v0.2.0", { "downloadDir": ".opencode/mm-files" }]],
   "permission": {
     "mattermost_create_post": "ask",
     "mattermost_react": "ask",
@@ -27,6 +31,9 @@ startup.
   }
 }
 ```
+
+`downloadDir` is required, and the directory has to exist before opencode starts — see
+[Configuration](#configuration).
 
 The `#v0.2.0` tag is deliberate. A bare `github:Chi-teck/oc-mm-client` tracks the default branch,
 so an unrelated push changes the code under a running install. opencode caches by the literal spec
@@ -59,16 +66,10 @@ They can also be passed inline as plugin options, which take precedence over the
 ]
 ```
 
-`downloadDir` moves where `mattermost_get_file` saves attachments; the default is
-`.opencode/mm-files/`. A relative value resolves against the opencode project directory — the same
-root `.env.local` is read from — and is created on the first download. It may not escape the git
-worktree, since opencode resolves the agent's `read` permission against it: a file saved outside is
-one the agent cannot open. Containment is checked after symlinks are resolved, so a directory that
-is itself a link pointing outside the worktree is refused as well. The worktree root itself is
-refused — attachments would land among the tracked sources — and so is anything inside `.git`. A
-`downloadDir` that is not a string in `opencode.json` is refused the same way rather than ignored
-silently. In every one of these cases the plugin logs one line and keeps the default; none of them
-is fatal. Existing downloads are not moved.
+`downloadDir` says where `mattermost_get_file` saves attachments. It has no default and no
+environment variable: the plugin does not start without it, because a client that cannot agree with
+you on where files land is one you would rather find out about at startup than after an attachment
+has gone somewhere unexpected.
 
 ```json
 "plugin": [
@@ -76,9 +77,23 @@ is fatal. Existing downloads are not moved.
 ]
 ```
 
-Missing or rejected credentials are not fatal: the plugin logs the reason and registers no tools.
-An unreachable host gets 10 seconds before the plugin gives up, so it cannot hang opencode's
-startup.
+A relative value resolves against the opencode project directory — the same root `.env.local` is
+read from. The directory must already exist, be a directory, and be writable; the plugin never
+creates it, so a typo cannot quietly become a second empty directory next to the one you meant. It
+may not escape the git worktree, since opencode resolves the agent's `read` permission against it: a
+file saved outside is one the agent cannot open. Containment is checked both as written and after
+symlinks are resolved, so a directory that is itself a link pointing outside the worktree is refused
+as well. The worktree root itself is refused — attachments would land among the tracked sources —
+and so is anything inside `.git`. A value that is not a string, or is blank, is refused rather than
+ignored silently.
+
+None of this is patched over with a fallback: every one of these mistakes disables the plugin, with
+one line in the log naming the value, the path it resolved to, and what is wrong with it.
+
+Missing or rejected credentials get the same treatment, and the two are reported together in that
+one line, so a config with a mistake in each does not cost two restarts. Nothing here ever throws
+into opencode's own startup: the plugin logs and registers no tools. An unreachable host gets 10
+seconds before it gives up, so it cannot hang the session either.
 
 Every request asks for English (`Accept-Language: en`). Mattermost picks the language of its error
 messages from that header alone — not from the token user's locale — so on a server whose default
@@ -100,7 +115,7 @@ Use real environment variables or plugin options instead.
 | `mattermost_read_unread` | Unread and mention counts per channel, or the unread posts of one channel. |
 | `mattermost_search` | Search posts or files across the team. |
 | `mattermost_list_members` | List channel members, optionally fuzzy-matched by username. |
-| `mattermost_get_file` | Download an attachment into `.opencode/mm-files/` (or `downloadDir`) and return the saved path. |
+| `mattermost_get_file` | Download an attachment into `downloadDir` and return the saved path. |
 | `mattermost_mark_read` | Clear a channel's unread state. |
 | `mattermost_create_post` | Post a message, optionally as a thread reply and with file attachments. |
 | `mattermost_react` | Add or remove an emoji reaction on a post. |

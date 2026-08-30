@@ -1,5 +1,5 @@
-import { realpath } from "node:fs/promises";
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { access, constants, realpath, stat } from "node:fs/promises";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Plugin, PluginInput, PluginOptions } from "@opencode-ai/plugin";
 import { createMattermostClient } from "./mattermost/client.js";
 import { createMattermostContext, withTimeout } from "./mattermost/context.js";
@@ -23,12 +23,13 @@ function strOption(options: PluginOptions | undefined, key: string): string | un
  * bare fetch, so an unreachable server rejects, and a 400 comes back as `{ error }` instead of
  * throwing. A torn line in the TUI still says why the plugin went quiet; nothing at all does not.
  * Never rejects: every caller is on a path that must still return `{}`, and a failure to report the
- * diagnosis must not replace it.
+ * diagnosis must not replace it. Always an error, since every line the plugin has to say is one
+ * about a plugin that is not going to run.
  */
-async function log(input: PluginInput, level: "warn" | "error", message: string) {
+async function log(input: PluginInput, message: string) {
   try {
     const { error } = await input.client.app.log({
-      body: { service: "oc-mm-client", level, message },
+      body: { service: "oc-mm-client", level: "error", message },
     });
     if (!error) return;
   } catch {
@@ -38,79 +39,89 @@ async function log(input: PluginInput, level: "warn" | "error", message: string)
 }
 
 /**
- * `realpath` of the longest ancestor that exists, with the segments below it appended back. The
- * download directory is created on the first download, so at load time it usually does not exist yet
- * and a plain `realpath` could only answer ENOENT — while the parent it will be created under may
- * well be a link that leads out of the worktree. A path that resolves nowhere at all (an ancestor
- * that denies traversal, say) is handed back untouched, which leaves the containment check lexical
- * for that one path instead of failing the plugin over it.
+ * Where the option may not point, and why: outside the worktree, since opencode resolves the agent's
+ * `read` permission against it and a file saved elsewhere is one the caller cannot open afterwards;
+ * the worktree root itself, where attachments would be strewn among the tracked sources; and
+ * anything under `.git`, where dropping files is a good deal worse than untidy. Run twice by the
+ * caller — once on the path as written, so a directory that was never going to be allowed is named
+ * as such rather than as one that happens not to exist, and once on the `realpath`s, since a lexical
+ * `relative()` reads `<worktree>/attachments` as contained however far out a link points.
  */
-async function followLinks(path: string): Promise<string> {
-  const tail: string[] = [];
-  let current = path;
-  for (;;) {
-    try {
-      return join(await realpath(current), ...tail);
-    } catch {
-      const parent = dirname(current);
-      if (parent === current) return path;
-      tail.unshift(basename(current));
-      current = parent;
-    }
+function containment(root: string, candidate: string): string | undefined {
+  const rel = relative(root, candidate);
+  if (!rel) return `is ${root} itself, where attachments would litter the tracked sources`;
+  if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+    return `resolves to ${candidate}, outside ${root}`;
   }
+  if (rel.split(sep).includes(".git")) return `resolves to ${candidate}, inside a git directory`;
+  return undefined;
 }
 
 /**
  * The option is a path relative to the project directory — resolved there rather than against the
- * process cwd for the same reason `.env.local` is, one comment below. Four values are refused, all
- * of them the same way, because a configuration mistake, unlike a missing credential, leaves the
- * plugin perfectly able to work: anything that lands outside the worktree, since opencode resolves
- * the agent's `read` permission against it and a file saved elsewhere is one the caller cannot open
- * afterwards; the worktree root itself, where attachments would be strewn among the tracked sources;
- * anything under `.git`, where dropping files is a good deal worse than untidy; and a non-string,
- * which would otherwise be the one mistake that produces no message at all. The comparison runs on
- * `realpath`ed paths — both sides, so a worktree that itself sits under a link still matches — since
- * a lexical `relative()` reads `<worktree>/attachments` as contained however far out the link points.
+ * process cwd for the same reason `.env.local` is, one comment below — and it is required: there is
+ * no implicit default, so a plugin that cannot agree with its user on where downloads land does not
+ * start. Every way of getting it wrong is fatal, and none of them is created away. A directory that
+ * is absent, is a file, or cannot be written is one that every `mattermost_get_file` call would fail
+ * on, so registering the tool would only move the discovery to the first attachment somebody needed;
+ * and `mkdir` here would turn a typo into a second empty directory nobody asked for, sitting next to
+ * the one that was meant. A non-string is refused with the rest, since it would otherwise be the one
+ * mistake that produces no message at all.
  */
-async function resolveDownloadDir(value: unknown, input: PluginInput): Promise<string | undefined> {
-  if (value === undefined) return undefined;
-  const ignore = (subject: string, reason: string) =>
-    log(
-      input,
-      "warn",
-      `oc-mm-client: ignoring downloadDir ${subject} — ${reason}; using the default .opencode/mm-files`,
-    );
+async function resolveDownloadDir(
+  value: unknown,
+  input: PluginInput,
+): Promise<{ path?: string; error?: string }> {
+  const refuse = (subject: string, reason: string) => ({
+    error: `downloadDir ${subject} ${reason}`,
+  });
+  if (value === undefined) return { error: "set the downloadDir plugin option" };
   if (typeof value !== "string" || !value.trim()) {
     // Quoted, because the point of the message is the shape of the value: an unquoted `["a"]` or a
     // whitespace-only string looks in the log exactly like the path the user meant to write.
-    await ignore(
+    return refuse(
       JSON.stringify(value),
-      typeof value === "string" ? "it is blank" : "it is not a string path",
+      typeof value === "string" ? "is blank" : "is not a string path",
     );
-    return undefined;
   }
   const dir = value.trim();
   const resolved = resolve(input.directory, dir);
   // The worktree, not the session directory: `read` permissions are resolved against it, and it is
   // the wider of the two when opencode is started inside a subdirectory.
-  const root = await followLinks(input.worktree);
-  const real = await followLinks(resolved);
-  const rel = relative(root, real);
-  if (!rel) {
-    await ignore(dir, `it is ${root} itself, where attachments would litter the tracked sources`);
-    return undefined;
+  const lexical = containment(input.worktree, resolved);
+  if (lexical) return refuse(dir, lexical);
+  let real: string;
+  try {
+    const stats = await stat(resolved);
+    if (!stats.isDirectory()) {
+      return refuse(dir, `resolves to ${resolved}, which is not a directory`);
+    }
+    // Cannot fail once `stat` has walked the same path, but it is the call that reports where a
+    // link actually leads, and the containment check below is only as good as it.
+    real = await realpath(resolved);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    // ENOTDIR is a component of the path that is a file, ENOENT the path itself; to whoever has to
+    // fix the line in `opencode.json` the distinction between them is not worth a sentence.
+    const reason =
+      code === "ENOENT"
+        ? "does not exist"
+        : code === "ENOTDIR"
+          ? "is not a directory"
+          : `cannot be read (${code ?? String(error)})`;
+    return refuse(dir, `resolves to ${resolved}, which ${reason}`);
   }
-  if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
-    await ignore(dir, `it resolves to ${real}, outside ${root}`);
-    return undefined;
-  }
-  if (rel.split(sep).includes(".git")) {
-    await ignore(dir, `it resolves to ${real}, inside a git directory`);
-    return undefined;
+  // Both sides resolved, so a worktree that itself sits under a link still matches.
+  const escaped = containment(await realpath(input.worktree).catch(() => input.worktree), real);
+  if (escaped) return refuse(dir, escaped);
+  try {
+    await access(real, constants.W_OK);
+  } catch {
+    return refuse(dir, `resolves to ${real}, which is not writable`);
   }
   // The configured path, not its `realpath`: a link inside the worktree is one the caller can read
   // through, and the description reads better naming the directory that was actually asked for.
-  return resolved;
+  return { path: resolved };
 }
 
 export default (async (input, options) => {
@@ -127,24 +138,29 @@ export default (async (input, options) => {
   const url = strOption(options, "url") ?? env?.url;
   const token = strOption(options, "token") ?? env?.token;
   const team = strOption(options, "team") ?? env?.team;
-  // Ahead of the credentials gate, whose early return would otherwise hide this mistake behind that
-  // one and cost a second restart to learn about it. Nothing is paid for the reordering: the check
-  // reads the filesystem and never the network.
-  const downloadDir = await resolveDownloadDir(options?.downloadDir, input);
-  if (!url || !token || !team) {
-    // Only what is still missing once options and environment are combined: telling someone whose
-    // url and token are fine to "set OC_MM_URL, OC_MM_TOKEN and OC_MM_TEAM" sends them auditing two
-    // settings that were already right. Both sources are named because either one satisfies it.
-    const missing = [url ? null : "url", token ? null : "token", team ? null : "team"].filter(
-      (name) => name !== null,
-    );
-    await log(
-      input,
-      "error",
-      `oc-mm-client disabled: set ${missing
+  const { path: downloadDir, error: downloadError } = await resolveDownloadDir(
+    options?.downloadDir,
+    input,
+  );
+  // Only what is still missing once options and environment are combined: telling someone whose url
+  // and token are fine to "set OC_MM_URL, OC_MM_TOKEN and OC_MM_TEAM" sends them auditing two
+  // settings that were already right. Both sources are named because either one satisfies it.
+  const missing = [url ? null : "url", token ? null : "token", team ? null : "team"].filter(
+    (name) => name !== null,
+  );
+  // Both gates in one line. Either is fatal on its own, and reporting whichever was checked first
+  // would leave the other to be discovered on the next restart, and the one after that.
+  const problems: string[] = [];
+  if (missing.length) {
+    problems.push(
+      `set ${missing
         .map((name) => `OC_MM_${name.toUpperCase()}`)
         .join(", ")} — or the ${missing.join(", ")} plugin option${missing.length > 1 ? "s" : ""}`,
     );
+  }
+  if (downloadError) problems.push(downloadError);
+  if (!url || !token || !team || !downloadDir) {
+    await log(input, `oc-mm-client disabled: ${problems.join("; ")}`);
     return {};
   }
 
@@ -170,7 +186,6 @@ export default (async (input, options) => {
     const described = describeClientError(error);
     await log(
       input,
-      "error",
       `oc-mm-client disabled: ${described instanceof Error ? described.message : String(described)}`,
     );
     return {};

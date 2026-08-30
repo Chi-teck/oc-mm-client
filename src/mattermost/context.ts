@@ -25,7 +25,10 @@ export interface FormatOptions {
 export interface MattermostContext {
   client: Client4;
   config: MattermostEnv;
-  /** Absolute path from the `downloadDir` plugin option; unset means the default in `files.ts`. */
+  /**
+   * Absolute path from the `downloadDir` plugin option, which the plugin requires and checks at
+   * startup. Unset only under the CLI, which has no options and takes the default in `files.ts`.
+   */
   downloadDir?: string;
   me(): Promise<UserProfile>;
   team(): Promise<Team>;

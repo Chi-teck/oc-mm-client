@@ -128,15 +128,16 @@ describe("mattermost_get_file", () => {
     await cleanScratch();
   });
 
-  it("falls back to the session directory when the worktree is not writable", async () => {
+  it("names the unwritable worktree instead of relocating the download", async () => {
     await cleanScratch();
     mockFetch(() => new Response("data"));
     const ctx = createMattermostContext(config);
     const tctx = { ...toolCtx(SCRATCH), worktree: "/proc/nonexistent" } as ToolContext;
-    const result = await getFileTool(ctx).execute({ file_id: FILE_ID, name: "saved.txt" }, tctx);
-    const output = typeof result === "string" ? result : result.output;
-    expect(output).toContain(`${SCRATCH}/.opencode/mm-files/saved.txt`);
-    expect(await Bun.file(`${SCRATCH}/.opencode/mm-files/saved.txt`).text()).toBe("data");
+    await expect(
+      getFileTool(ctx).execute({ file_id: FILE_ID, name: "saved.txt" }, tctx),
+    ).rejects.toThrow(
+      /^Download directory \/proc\/nonexistent\/\.opencode\/mm-files could not be created \(E[A-Z]+\)$/,
+    );
     await cleanScratch();
   });
 
@@ -361,7 +362,8 @@ describe("mattermost_get_file", () => {
     );
   });
 
-  it("keeps the default description when no directory is configured", () => {
+  // Only the CLI gets here: the plugin refuses to start without a `downloadDir`.
+  it("names the CLI's default in the description when no directory is configured", () => {
     const ctx = createMattermostContext(config);
     expect(getFileTool(ctx).description).toBe(
       "Download a Mattermost file attachment by id into <worktree>/.opencode/mm-files/ and return the saved path.",
