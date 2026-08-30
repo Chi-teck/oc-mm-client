@@ -13,13 +13,27 @@ function strOption(options: PluginOptions | undefined, key: string): string | un
 }
 
 /**
+ * Not `console.error`: opencode captures nothing a plugin writes to stdout or stderr. In the TUI the
+ * text is painted into the frame the interface is about to repaint — a flicker at startup, torn
+ * output later — and it reaches no log file at all. This goes to opencode's own log, where
+ * `--print-logs` and `log/opencode.log` can find it. The service name is not rendered in the log
+ * line, so the message keeps carrying the plugin's name.
+ */
+function log(input: PluginInput, level: "warn" | "error", message: string) {
+  return input.client.app.log({ body: { service: "oc-mm-client", level, message } });
+}
+
+/**
  * The option is a path relative to the project directory — resolved there rather than against the
  * process cwd for the same reason `.env.local` is, one comment below. A directory outside the
  * worktree is refused: opencode resolves `read` permissions against it, so a file saved elsewhere is
  * one the caller cannot open afterwards. A configuration mistake, unlike a missing credential, leaves
  * the plugin working: say so and keep the default.
  */
-function resolveDownloadDir(value: string | undefined, input: PluginInput): string | undefined {
+async function resolveDownloadDir(
+  value: string | undefined,
+  input: PluginInput,
+): Promise<string | undefined> {
   if (!value) return undefined;
   const resolved = resolve(input.directory, value);
   // The worktree, not the session directory: `read` permissions are resolved against it, and it is
@@ -27,7 +41,9 @@ function resolveDownloadDir(value: string | undefined, input: PluginInput): stri
   const root = input.worktree ?? input.directory;
   const rel = relative(root, resolved);
   if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
-    console.error(
+    await log(
+      input,
+      "warn",
       `oc-mm-client: ignoring downloadDir ${value} — it resolves to ${resolved}, outside ${root}; using the default .opencode/mm-files`,
     );
     return undefined;
@@ -50,14 +66,16 @@ export default (async (input, options) => {
   const token = strOption(options, "token") ?? env?.token;
   const team = strOption(options, "team") ?? env?.team;
   if (!url || !token || !team) {
-    console.error(
+    await log(
+      input,
+      "error",
       "oc-mm-client disabled: set OC_MM_URL, OC_MM_TOKEN and OC_MM_TEAM, or url/token/team plugin options",
     );
     return {};
   }
 
   const client = createMattermostClient({ url, token });
-  const downloadDir = resolveDownloadDir(strOption(options, "downloadDir"), input);
+  const downloadDir = await resolveDownloadDir(strOption(options, "downloadDir"), input);
   const ctx = createMattermostContext({ url, token, team }, client, { downloadDir });
   try {
     // Probe the server once at load; registering tools we cannot serve would turn every
@@ -77,7 +95,9 @@ export default (async (input, options) => {
     // nothing else, and that sentence is empty when the body is not Mattermost's JSON envelope —
     // which printed a bare "oc-mm-client disabled:" with no reason at all.
     const described = describeClientError(error);
-    console.error(
+    await log(
+      input,
+      "error",
       `oc-mm-client disabled: ${described instanceof Error ? described.message : String(described)}`,
     );
     return {};

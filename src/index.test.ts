@@ -12,21 +12,34 @@ let cwd: string;
 let sandbox: string;
 let input: PluginInput;
 let saved: Record<string, string | undefined>;
-const errors: string[] = [];
-const realError = console.error;
+const logs: string[] = [];
+
+/** The plugin reports through opencode's log endpoint; this records what it would have sent. */
+function pluginInput(directory: string, worktree?: string): PluginInput {
+  return {
+    directory,
+    worktree,
+    client: {
+      app: {
+        log: async ({ body }: { body: { level: string; message: string } }) => {
+          logs.push(`${body.level}: ${body.message}`);
+          return { data: true };
+        },
+      },
+    },
+  } as unknown as PluginInput;
+}
 
 beforeAll(async () => {
   cwd = process.cwd();
   sandbox = await mkdtemp(join(tmpdir(), "oc-mm-plugin-"));
-  input = { directory: sandbox } as PluginInput;
+  input = pluginInput(sandbox);
   process.chdir(sandbox);
   saved = Object.fromEntries(OC_MM_KEYS.map((key) => [key, process.env[key]]));
   for (const key of OC_MM_KEYS) delete process.env[key];
-  console.error = (...args: unknown[]) => void errors.push(args.join(" "));
 });
 
 afterAll(async () => {
-  console.error = realError;
   for (const key of OC_MM_KEYS) {
     const value = saved[key];
     if (value === undefined) delete process.env[key];
@@ -37,7 +50,7 @@ afterAll(async () => {
 });
 
 afterEach(() => {
-  errors.length = 0;
+  logs.length = 0;
 });
 
 describe("plugin entry", () => {
@@ -56,14 +69,14 @@ describe("plugin entry", () => {
 
   it("registers no tools when credentials are missing", async () => {
     expect(await plugin(input, undefined)).toEqual({});
-    expect(errors.join("\n")).toContain("oc-mm-client disabled");
+    expect(logs.join("\n")).toContain("oc-mm-client disabled");
   });
 
   it("registers no tools when the server rejects the token", async () => {
     const server = startMockMattermost({ unauthorized: true });
     try {
       expect(await plugin(input, { url: server.url, token: "bad", team: "my-team" })).toEqual({});
-      expect(errors.join("\n")).toContain("oc-mm-client disabled");
+      expect(logs.join("\n")).toContain("oc-mm-client disabled");
     } finally {
       server.stop();
     }
@@ -73,8 +86,8 @@ describe("plugin entry", () => {
     const server = startMockMattermost({ unauthorized: true });
     try {
       await plugin(input, { url: server.url, token: "bad", team: "my-team" });
-      expect(errors.join("\n")).toContain("Invalid or expired session");
-      expect(errors.join("\n")).not.toContain("team not found");
+      expect(logs.join("\n")).toContain("Invalid or expired session");
+      expect(logs.join("\n")).not.toContain("team not found");
     } finally {
       server.stop();
     }
@@ -84,10 +97,10 @@ describe("plugin entry", () => {
     const server = startMockMattermost({ silentError: true });
     try {
       expect(await plugin(input, { url: server.url, token: "tok", team: "my-team" })).toEqual({});
-      expect(errors.join("\n")).toContain(
+      expect(logs.join("\n")).toContain(
         "oc-mm-client disabled: Mattermost API 500 /api/v4/users/me: the server sent no message",
       );
-      expect(errors.join("\n")).not.toContain("disabled: \n");
+      expect(logs.join("\n")).not.toContain("disabled: \n");
     } finally {
       server.stop();
     }
@@ -115,7 +128,7 @@ describe("plugin entry", () => {
       [`OC_MM_URL=${server.url}`, "OC_MM_TOKEN=tok", "OC_MM_TEAM=my-team"].join("\n"),
     );
     try {
-      const hooks = await plugin({ directory: project } as PluginInput, undefined);
+      const hooks = await plugin(pluginInput(project), undefined);
       expect(Object.keys(hooks.tool ?? {})).toHaveLength(13);
       // The file's credentials stay out of the environment opencode hands to spawned processes.
       for (const key of OC_MM_KEYS) expect(process.env[key]).toBeUndefined();
@@ -132,7 +145,7 @@ describe("plugin entry", () => {
     // cwd would produce the same string and the assertion would prove nothing.
     const project = await mkdtemp(join(tmpdir(), "oc-mm-project-"));
     try {
-      const hooks = await plugin({ directory: project } as PluginInput, {
+      const hooks = await plugin(pluginInput(project), {
         url: server.url,
         token: "tok",
         team: "my-team",
@@ -150,7 +163,7 @@ describe("plugin entry", () => {
     const server = startMockMattermost();
     const project = await mkdtemp(join(tmpdir(), "oc-mm-project-"));
     try {
-      const hooks = await plugin({ directory: project } as PluginInput, {
+      const hooks = await plugin(pluginInput(project), {
         url: server.url,
         token: "tok",
         team: "my-team",
@@ -158,7 +171,7 @@ describe("plugin entry", () => {
       });
       const def = hooks.tool?.mattermost_get_file;
       expect(def?.description).toContain(join(project, "attachments"));
-      expect(errors.join("\n")).not.toContain("downloadDir");
+      expect(logs.join("\n")).not.toContain("downloadDir");
     } finally {
       await rm(project, { recursive: true, force: true });
       server.stop();
@@ -169,14 +182,14 @@ describe("plugin entry", () => {
     const server = startMockMattermost();
     const project = await mkdtemp(join(tmpdir(), "oc-mm-project-"));
     try {
-      const hooks = await plugin({ directory: project } as PluginInput, {
+      const hooks = await plugin(pluginInput(project), {
         url: server.url,
         token: "tok",
         team: "my-team",
         downloadDir: "../escape",
       });
       expect(Object.keys(hooks.tool ?? {})).toHaveLength(13);
-      expect(errors.join("\n")).toContain("ignoring downloadDir ../escape");
+      expect(logs.join("\n")).toContain("ignoring downloadDir ../escape");
       const def = hooks.tool?.mattermost_get_file;
       expect(def?.description).toContain("<worktree>/.opencode/mm-files/");
     } finally {
@@ -189,14 +202,14 @@ describe("plugin entry", () => {
     const server = startMockMattermost();
     const project = await mkdtemp(join(tmpdir(), "oc-mm-project-"));
     try {
-      const hooks = await plugin({ directory: project } as PluginInput, {
+      const hooks = await plugin(pluginInput(project), {
         url: server.url,
         token: "tok",
         team: "my-team",
         downloadDir: "/etc/mm-files",
       });
       expect(Object.keys(hooks.tool ?? {})).toHaveLength(13);
-      expect(errors.join("\n")).toContain("ignoring downloadDir /etc/mm-files");
+      expect(logs.join("\n")).toContain("ignoring downloadDir /etc/mm-files");
       const def = hooks.tool?.mattermost_get_file;
       expect(def?.description).toContain("<worktree>/.opencode/mm-files/");
     } finally {
@@ -211,15 +224,12 @@ describe("plugin entry", () => {
     try {
       // opencode started in a subdirectory: `..` leaves the session directory but not the worktree,
       // which is the root `read` permissions are resolved against.
-      const hooks = await plugin(
-        { directory: join(project, "sub"), worktree: project } as PluginInput,
-        {
-          url: server.url,
-          token: "tok",
-          team: "my-team",
-          downloadDir: "../attachments",
-        },
-      );
+      const hooks = await plugin(pluginInput(join(project, "sub"), project), {
+        url: server.url,
+        token: "tok",
+        team: "my-team",
+        downloadDir: "../attachments",
+      });
       const def = hooks.tool?.mattermost_get_file;
       expect(def?.description).toContain(join(project, "attachments"));
     } finally {
@@ -237,7 +247,7 @@ describe("plugin entry", () => {
     );
     process.env.OC_MM_TEAM = "my-team";
     try {
-      const hooks = await plugin({ directory: project } as PluginInput, undefined);
+      const hooks = await plugin(pluginInput(project), undefined);
       expect(Object.keys(hooks.tool ?? {})).toHaveLength(13);
       expect(server.paths).toContain("/api/v4/teams/name/my-team");
     } finally {
