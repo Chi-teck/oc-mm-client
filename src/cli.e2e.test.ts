@@ -1,17 +1,25 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type MockServer, startMockMattermost } from "../test/mock-server.js";
 
 const root = join(import.meta.dir, "..");
 
 let server: MockServer;
+let outsideDir: string;
+let outside: string;
 
-beforeAll(() => {
+beforeAll(async () => {
   server = startMockMattermost();
+  outsideDir = await mkdtemp(join(tmpdir(), "oc-mm-cli-"));
+  outside = join(outsideDir, "shot.png");
+  await Bun.write(outside, "png");
 });
 
-afterAll(() => {
+afterAll(async () => {
   server.stop();
+  await rm(outsideDir, { recursive: true, force: true });
 });
 
 async function runCli(args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
@@ -63,6 +71,22 @@ describe("oc-mm exit codes", () => {
     const { code, stderr } = await runCli(["create_post", "channel=my-channel", "message=hi"]);
     expect(code).toBe(1);
     expect(stderr).toContain("permission required");
+  });
+
+  it("attaches a file from outside the working directory", async () => {
+    // The CLI runs unconfined (`uploadRoot: "/"`), unlike the plugin: the operator typed the path.
+    // Stopping at the permission gate is the assertion — it is reached only after the attachment
+    // has been resolved and accepted, and the summary is where the accepted path is named.
+    const { code, stderr } = await runCli([
+      "create_post",
+      "channel=my-channel",
+      "message=hi",
+      `attachments=${outside}`,
+    ]);
+    expect(code).toBe(1);
+    expect(stderr).toContain(`permission required`);
+    expect(stderr).toContain(`[files: ${outside}]`);
+    expect(stderr).not.toContain("Attachment outside");
   });
 
   it("runs a read tool and exits 0", async () => {

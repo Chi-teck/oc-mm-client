@@ -1,5 +1,7 @@
+import { realpath } from "node:fs/promises";
 import { basename, resolve } from "node:path";
 import { tool } from "@opencode-ai/plugin";
+import { contains } from "../../paths.js";
 import { humanSize, type MattermostContext, unreadCount } from "../context.js";
 import { confirmWrite } from "./confirm.js";
 import { describeClientError } from "./registry.js";
@@ -11,20 +13,58 @@ async function maxFileSize(ctx: MattermostContext): Promise<number | undefined> 
   return Number.isFinite(bytes) && bytes > 0 ? bytes : undefined;
 }
 
+/** One attachment as the caller wrote it, beside the absolute path it was found at. */
+interface Attachment {
+  attachment: string;
+  abs: string;
+}
+
+/**
+ * Resolves `attachment` against `directory` — that is what a relative path means to the caller, and
+ * re-anchoring it on the root the moment somebody sets the option would quietly move every file the
+ * agent just wrote — then refuses anything that does not land under `root`. Both sides are
+ * `realpath`ed, so a symlink inside the root cannot point out of it and a root reached through a
+ * symlink still matches the paths under it; `root` arrives resolved, once per call.
+ */
+async function resolveUnder(root: string, directory: string, attachment: string): Promise<string> {
+  const abs = resolve(directory, attachment);
+  let real: string;
+  try {
+    real = await realpath(abs);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    // ENOENT is a missing file, not an escape: hand it to the existence check in
+    // `uploadAttachments`, which already words it well, rather than reporting a typo as a security
+    // refusal. Nothing leaves the machine either way — a path that does not exist cannot be read.
+    // Anything else — EACCES on a parent, ELOOP — is refused here, since it left the question open.
+    if (code === "ENOENT") return abs;
+    throw new Error(`Attachment cannot be resolved: ${attachment} (${code ?? String(error)})`);
+  }
+  const where = contains(root, real);
+  if (where === "root") throw new Error(`Attachment is ${root} itself, not a file: ${attachment}`);
+  if (where === "outside") {
+    // The second clause is not decoration. The first person to hit this line is someone whose
+    // working `/tmp/report.pdf` stopped uploading after a version bump; naming the option turns
+    // that into a one-line fix instead of a hunt through the README.
+    throw new Error(
+      `Attachment outside ${root}: ${attachment} (resolved to ${real}) — set the uploadRoot plugin option to allow it`,
+    );
+  }
+  // The path as the caller would recognise it, not its `realpath`: the confirmation names it.
+  return abs;
+}
+
 async function uploadAttachments(
   ctx: MattermostContext,
   channelId: string,
-  attachments: string[],
-  directory: string,
+  files: Attachment[],
 ): Promise<string[]> {
   // Check every path before uploading any: a second file that is missing or over the server's
   // limit would otherwise leave the first one orphaned, since the post that would carry it is
-  // never created. This only rules out the failures visible from here — the upload loop below
-  // still has to own the ones that are not.
-  const blobs = attachments.map((attachment) => {
-    const abs = resolve(directory, attachment);
-    return { abs, blob: Bun.file(abs), attachment };
-  });
+  // never created. `resolveUnder` is the third member of that family and runs earlier still, before
+  // the caller is even asked. This only rules out the failures visible from here — the upload loop
+  // below still has to own the ones that are not.
+  const blobs = files.map(({ abs, attachment }) => ({ abs, blob: Bun.file(abs), attachment }));
   for (const { abs, blob, attachment } of blobs) {
     if (!(await blob.exists())) {
       throw new Error(`Attachment not found: ${attachment} (resolved to ${abs})`);
@@ -79,21 +119,31 @@ export function createPostTool(ctx: MattermostContext) {
       if (!message.trim() && !attachments?.length) {
         throw new Error("Refusing to post an empty message with no attachments");
       }
+      // Before the channel lookup and before the prompt, both. A path that was never going to be
+      // allowed should not cost a human a decision, and a refusal that landed mid-upload would
+      // leave the files before it orphaned on the server; that it also saves a round trip on the
+      // way out is a side effect. The root is `realpath`ed once here — a root that cannot be
+      // resolved falls back to the path as written, which can only refuse more, never less.
+      const root = ctx.uploadRoot ?? tctx.worktree;
+      const files: Attachment[] = [];
+      if (attachments?.length) {
+        const real = await realpath(root).catch(() => resolve(root));
+        // Sequential, so two bad attachments report in the order the caller wrote them.
+        for (const attachment of attachments) {
+          files.push({ attachment, abs: await resolveUnder(real, tctx.directory, attachment) });
+        }
+      }
       const resolved = await ctx.resolveChannel(channel);
-      // Spell out the resolved paths: attachments are read from anywhere the process can reach,
-      // so approving the post is also approving the upload of these exact files.
-      const files = attachments?.length
-        ? ` [files: ${attachments.map((path) => resolve(tctx.directory, path)).join(", ")}]`
-        : "";
+      // Spell out the resolved paths: they are confined to the root above, so approving the post is
+      // also approving the upload of these exact files.
+      const summary = files.length ? ` [files: ${files.map((f) => f.abs).join(", ")}]` : "";
       // Confirm before uploading, so a declined post leaves no orphaned files on the server.
       await confirmWrite(
         tctx,
         "mattermost_create_post",
-        `mattermost_create_post ${resolved.name}${rootId ? ` (thread ${rootId})` : ""}: ${message.slice(0, 120)}${files}`,
+        `mattermost_create_post ${resolved.name}${rootId ? ` (thread ${rootId})` : ""}: ${message.slice(0, 120)}${summary}`,
       );
-      const fileIds = attachments?.length
-        ? await uploadAttachments(ctx, resolved.id, attachments, tctx.directory)
-        : [];
+      const fileIds = files.length ? await uploadAttachments(ctx, resolved.id, files) : [];
       const post = await ctx.client.createPost({
         channel_id: resolved.id,
         message,

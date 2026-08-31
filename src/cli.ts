@@ -135,7 +135,12 @@ export async function main(argv: string[]): Promise<number> {
   }
 
   const env = readMattermostEnv(mergeEnv(loadEnvFile()));
-  const tools = createTools(createMattermostContext(env));
+  // `uploadRoot: "/"` leaves attachments unconfined, which is what the default — the worktree, and
+  // here the process cwd — must not do to this caller. The plugin is a trust boundary because an
+  // agent is on the other end of it; the CLI is the operator's own shell, and refusing
+  // `attachments=/tmp/shot.png` from a human who typed it buys nothing. The explicit `undefined`
+  // keeps the client parameter's default.
+  const tools = createTools(createMattermostContext(env, undefined, { uploadRoot: "/" }));
   const def = resolveTool(tools, name);
   if (!def) {
     console.error(`unknown tool: ${name}\n\n${usage(tools)}`);

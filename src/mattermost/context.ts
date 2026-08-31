@@ -30,6 +30,12 @@ export interface MattermostContext {
    * startup. Unset only under the CLI, which has no options and takes the default in `files.ts`.
    */
   downloadDir?: string;
+  /**
+   * Absolute path from the `uploadRoot` plugin option: every `mattermost_create_post` attachment has
+   * to resolve inside it. Unset means the tool call's worktree, which is where opencode resolves the
+   * agent's own `read` permission — so the plugin ends up matching its host rather than exceeding it.
+   */
+  uploadRoot?: string;
   me(): Promise<UserProfile>;
   team(): Promise<Team>;
   clientConfig(): Promise<ClientConfig>;
@@ -109,7 +115,7 @@ export function withTimeout<T>(promise: Promise<T>, ms: number, message: string)
 export function createMattermostContext(
   config: MattermostEnv,
   client: Client4 = createMattermostClient(config satisfies MattermostConfig),
-  options: { downloadDir?: string } = {},
+  options: { downloadDir?: string; uploadRoot?: string } = {},
 ): MattermostContext {
   let mePromise: Promise<UserProfile> | undefined;
   let teamPromise: Promise<Team> | undefined;
@@ -271,6 +277,7 @@ export function createMattermostContext(
     client,
     config,
     downloadDir: options.downloadDir,
+    uploadRoot: options.uploadRoot,
     me,
     team,
     clientConfig,

@@ -21,7 +21,7 @@ mkdir -p .opencode/mm-files
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": [["github:Chi-teck/oc-mm-client#v0.3.0", { "downloadDir": ".opencode/mm-files" }]],
+  "plugin": [["github:Chi-teck/oc-mm-client#v0.4.0", { "downloadDir": ".opencode/mm-files" }]],
   "permission": {
     "mattermost_create_post": "ask",
     "mattermost_react": "ask",
@@ -32,7 +32,7 @@ mkdir -p .opencode/mm-files
 }
 ```
 
-The `#v0.3.0` tag is deliberate. A bare `github:Chi-teck/oc-mm-client` tracks the default branch,
+The `#v0.4.0` tag is deliberate. A bare `github:Chi-teck/oc-mm-client` tracks the default branch,
 so an unrelated push changes the code under a running install. opencode caches by the literal spec
 string, so bumping the tag is also what triggers a re-download.
 
@@ -59,7 +59,7 @@ environment:
 {
   "plugin": [
     [
-      "github:Chi-teck/oc-mm-client#v0.3.0",
+      "github:Chi-teck/oc-mm-client#v0.4.0",
       {
         "url": "https://mattermost.example.com",
         "token": "…",
@@ -85,6 +85,26 @@ project directory — the same root `.env.local` is read from — and it has to 
 - is neither the worktree root — attachments would land among the tracked sources — nor anything
   inside `.git`.
 
+`uploadRoot` is the other direction: every file `mattermost_create_post` attaches has to resolve
+inside it. It defaults to the git worktree, so the ordinary workflow — the agent writes a file, or
+downloads one with `mattermost_get_file`, then attaches it — needs no configuration, and a file
+outside the project is refused with an error naming this option. Unlike `downloadDir` it is
+optional, it is never written to, and it does not have to sit inside the worktree: `"/"` restores
+the pre-v0.4.0 behaviour of attaching any file the process can read. A relative value resolves
+against the project directory, and a relative *attachment* still resolves against the tool call's
+working directory rather than against this root. Both sides of the comparison are resolved through
+symlinks, so a link inside the root cannot point out of it. The `oc-mm` CLI is deliberately
+unconfined — the path there was typed by you, not produced by a model.
+
+Two things it is not. It is not an exfiltration control: an agent with `read` and `bash` can put a
+secret in the `message` argument, and nothing here reads message bodies. And it cannot see
+opencode's own `read` rules — a root is one boundary, a permission block is a list of globs. If you
+deny paths by pattern (`*.env`, say), set `uploadRoot` narrowly enough that the patterns do not
+matter; the worktree default will happily attach a denied file that lives inside the project. There
+is also a gap this does not close: the path is checked and then opened, so a file swapped between
+the two is not caught. Closing that needs an `fstat` on the open handle, which is not implemented —
+it requires local write access to the root to exploit.
+
 A value that is not a string, or is blank, is refused rather than ignored silently. None of this is
 patched over with a fallback: every one of these mistakes disables the plugin, with one line in the
 log naming the value, the path it resolved to, and what is wrong with it. Missing or rejected
@@ -102,6 +122,19 @@ directory (the one `--dir` points at, not the shell's working directory), so an 
 will not find one inside the package. Its values are read straight into the plugin and never
 exported into the process environment, so they are not inherited by the commands opencode runs.
 Use real environment variables or plugin options instead.
+
+## Upgrading
+
+opencode caches a plugin by the literal spec string, so nothing changes under a running install
+until you edit the tag — and both minors so far ask something of an existing config.
+
+- **v0.4.0** confines `mattermost_create_post` attachments to `uploadRoot`, which defaults to the
+  git worktree. Attaching `/tmp/report.pdf`, a file in a sibling checkout, or a path reached through
+  a symlink that leaves the project now fails with an error naming the option. Nothing else changes:
+  every other tool, and every post without attachments, behaves as before. No config edit is
+  required to stay on the happy path; `"uploadRoot": "/"` restores the old behaviour outright.
+- **v0.3.0** made `downloadDir` mandatory — the plugin does not start without it — and the directory
+  has to exist already, since it is never created for you.
 
 ## Tools
 

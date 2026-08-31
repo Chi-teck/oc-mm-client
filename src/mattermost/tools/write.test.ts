@@ -1,5 +1,7 @@
-import { describe, expect, it } from "bun:test";
-import { resolve } from "node:path";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { mkdtemp, realpath, rm, symlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { type Client4, ClientError } from "@mattermost/client";
 import type { ChannelMembership, ServerChannel } from "@mattermost/types/channels";
 import type { ClientConfig } from "@mattermost/types/config";
@@ -14,6 +16,29 @@ const ME_ID = "uuuuuuuuuuuuuuuuuuuuuuuuu1";
 const TEAM_ID = "tttttttttttttttttttttttttt";
 const CHANNEL_ID = "ccccccccccccccccccccccccc1";
 const FILE_ID = "ffffffffffffffffffffffff01";
+
+/**
+ * A file that exists and is not in the worktree, which is what the default upload root is here:
+ * `toolCtx` sets `worktree` to the process cwd. A path that merely does not exist would be reported
+ * as missing rather than as an escape, so the refusals below need a real one.
+ */
+let outsideDir: string;
+let outside: string;
+/** Both sides as the tool sees them — `realpath`ed, since that is what the refusals name. */
+let realOutside: string;
+let realCwd: string;
+
+beforeAll(async () => {
+  outsideDir = await mkdtemp(join(tmpdir(), "oc-mm-upload-"));
+  outside = join(outsideDir, "secret.txt");
+  await Bun.write(outside, "secret");
+  realOutside = await realpath(outside);
+  realCwd = await realpath(process.cwd());
+});
+
+afterAll(async () => {
+  await rm(outsideDir, { recursive: true, force: true });
+});
 
 const toolCtx = (onAsk?: (input: unknown) => Promise<void>) =>
   ({
@@ -228,6 +253,104 @@ describe("mattermost_create_post", () => {
         recordingCtx().tctx,
       ),
     ).rejects.toThrow("Attachment not found: nope.txt");
+    expect(client.state.order).toEqual([]);
+  });
+
+  it("refuses an attachment outside the root, before asking or uploading", async () => {
+    const client = mockClient();
+    const ctx = createMattermostContext(config, client);
+    const { asks, tctx } = recordingCtx();
+    await expect(
+      createPostTool(ctx).execute(
+        { channel: "my-channel", message: "x", attachments: [outside] },
+        tctx,
+      ),
+    ).rejects.toThrow(
+      `Attachment outside ${realCwd}: ${outside} (resolved to ${realOutside}) — set the uploadRoot plugin option to allow it`,
+    );
+    // Refused ahead of the prompt, not merely ahead of the upload: a path that was never going to
+    // be allowed should not cost a human a decision.
+    expect(asks).toEqual([]);
+    expect(client.state.order).toEqual([]);
+  });
+
+  it("refuses a symlink inside the root that points outside it", async () => {
+    // The case a lexical prefix check passes: the path is under the worktree, the file is not.
+    const link = "local/tmp/link.txt";
+    await rm(link, { force: true });
+    await symlink(outside, link);
+    const client = mockClient();
+    const ctx = createMattermostContext(config, client);
+    const { asks, tctx } = recordingCtx();
+    try {
+      await expect(
+        createPostTool(ctx).execute(
+          { channel: "my-channel", message: "x", attachments: ["link.txt"] },
+          tctx,
+        ),
+      ).rejects.toThrow(`Attachment outside ${realCwd}: link.txt (resolved to ${realOutside})`);
+      expect(asks).toEqual([]);
+      expect(client.state.order).toEqual([]);
+    } finally {
+      await rm(link, { force: true });
+    }
+  });
+
+  it("refuses the root itself, which was never a file", async () => {
+    const client = mockClient();
+    const ctx = createMattermostContext(config, client, { uploadRoot: resolve("local/tmp") });
+    const { asks, tctx } = recordingCtx();
+    await expect(
+      createPostTool(ctx).execute(
+        { channel: "my-channel", message: "x", attachments: ["."] },
+        tctx,
+      ),
+    ).rejects.toThrow(`Attachment is ${await realpath("local/tmp")} itself, not a file: .`);
+    expect(asks).toEqual([]);
+  });
+
+  it("still reports a missing attachment as missing, not as an escape", async () => {
+    // Outside the root and absent at once: the containment check cannot resolve it, and saying
+    // "outside the root" about a typo sends the reader to the config instead of to the filename.
+    const gone = join(outsideDir, "gone.txt");
+    const client = mockClient();
+    const ctx = createMattermostContext(config, client);
+    await expect(
+      createPostTool(ctx).execute(
+        { channel: "my-channel", message: "x", attachments: [gone] },
+        recordingCtx().tctx,
+      ),
+    ).rejects.toThrow(`Attachment not found: ${gone}`);
+  });
+
+  it("honours an uploadRoot, still resolving attachments against the tool call's directory", async () => {
+    await Bun.write("local/tmp/attach.txt", "hello attachment");
+    const client = mockClient();
+    // Two anchors, not one: the root is `local`, the tool call's directory is `local/tmp`, and
+    // `attach.txt` means the file in the latter — re-anchoring it on the root would move it.
+    const ctx = createMattermostContext(config, client, { uploadRoot: resolve("local") });
+    const { asks, tctx } = recordingCtx();
+    await createPostTool(ctx).execute(
+      { channel: "my-channel", message: "with file", attachments: ["attach.txt"] },
+      tctx,
+    );
+    const ask = asks[0] as { patterns: string[] };
+    expect(ask.patterns[0]).toContain(`[files: ${resolve("local/tmp", "attach.txt")}]`);
+    expect(client.state.order).toContain("uploadFile");
+  });
+
+  it("uploads nothing when a later attachment is outside the root", async () => {
+    await Bun.write("local/tmp/attach.txt", "hello attachment");
+    const client = mockClient();
+    const ctx = createMattermostContext(config, client);
+    const { asks, tctx } = recordingCtx();
+    await expect(
+      createPostTool(ctx).execute(
+        { channel: "my-channel", message: "x", attachments: ["attach.txt", outside] },
+        tctx,
+      ),
+    ).rejects.toThrow("Attachment outside ");
+    expect(asks).toEqual([]);
     expect(client.state.order).toEqual([]);
   });
 

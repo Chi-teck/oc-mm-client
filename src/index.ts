@@ -1,10 +1,11 @@
 import { access, constants, realpath, stat } from "node:fs/promises";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { join, relative, resolve, sep } from "node:path";
 import type { Plugin, PluginInput, PluginOptions } from "@opencode-ai/plugin";
 import { createMattermostClient } from "./mattermost/client.js";
 import { createMattermostContext, withTimeout } from "./mattermost/context.js";
 import { loadEnvFile, type MattermostEnv, mergeEnv, readMattermostEnv } from "./mattermost/env.js";
 import { createTools, describeClientError } from "./mattermost/tools/registry.js";
+import { contains } from "./paths.js";
 
 const STARTUP_TIMEOUT_MS = 10_000;
 
@@ -48,13 +49,27 @@ async function log(input: PluginInput, message: string) {
  * `relative()` reads `<worktree>/attachments` as contained however far out a link points.
  */
 function containment(root: string, candidate: string): string | undefined {
-  const rel = relative(root, candidate);
-  if (!rel) return `is ${root} itself, where attachments would litter the tracked sources`;
-  if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
-    return `resolves to ${candidate}, outside ${root}`;
+  const where = contains(root, candidate);
+  if (where === "root") {
+    return `is ${root} itself, where attachments would litter the tracked sources`;
   }
-  if (rel.split(sep).includes(".git")) return `resolves to ${candidate}, inside a git directory`;
+  if (where === "outside") return `resolves to ${candidate}, outside ${root}`;
+  if (relative(root, candidate).split(sep).includes(".git")) {
+    return `resolves to ${candidate}, inside a git directory`;
+  }
   return undefined;
+}
+
+/**
+ * The errno of a `stat` that failed, in the words of whoever has to fix the line in `opencode.json`:
+ * ENOTDIR is a component of the path that is a file, ENOENT the path itself, and the distinction
+ * between them is not worth a sentence.
+ */
+function statReason(error: unknown): string {
+  const code = (error as NodeJS.ErrnoException).code;
+  if (code === "ENOENT") return "does not exist";
+  if (code === "ENOTDIR") return "is not a directory";
+  return `cannot be read (${code ?? String(error)})`;
 }
 
 /**
@@ -100,16 +115,7 @@ async function resolveDownloadDir(
     // link actually leads, and the containment check below is only as good as it.
     real = await realpath(resolved);
   } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    // ENOTDIR is a component of the path that is a file, ENOENT the path itself; to whoever has to
-    // fix the line in `opencode.json` the distinction between them is not worth a sentence.
-    const reason =
-      code === "ENOENT"
-        ? "does not exist"
-        : code === "ENOTDIR"
-          ? "is not a directory"
-          : `cannot be read (${code ?? String(error)})`;
-    return refuse(dir, `resolves to ${resolved}, which ${reason}`);
+    return refuse(dir, `resolves to ${resolved}, which ${statReason(error)}`);
   }
   // Both sides resolved, so a worktree that itself sits under a link still matches.
   const escaped = containment(await realpath(input.worktree).catch(() => input.worktree), real);
@@ -121,6 +127,51 @@ async function resolveDownloadDir(
   }
   // The configured path, not its `realpath`: a link inside the worktree is one the caller can read
   // through, and the description reads better naming the directory that was actually asked for.
+  return { path: resolved };
+}
+
+/**
+ * `uploadRoot` is the other direction: every `mattermost_create_post` attachment has to resolve
+ * inside it. Unlike `downloadDir` it is optional — the worktree is a sane default, and requiring it
+ * would break every existing config to state what the default already says — so an absent value is
+ * neither a path nor an error. Checked here rather than per call for the same reason as the other:
+ * a root that cannot work is one every attachment would fail on, and finding that out at startup
+ * beats finding it out on the first file somebody needed.
+ *
+ * A shorter list than `resolveDownloadDir`'s, because the two directories are not the same kind of
+ * thing. Nothing is ever written here, so writability is not asked for; and the whole point of the
+ * option having a value is to name a boundary other than the default, including one outside the
+ * worktree — `"/"` is the documented way to keep the pre-v0.4.0 behaviour — so containment is not
+ * asked for either. What is left is that the path exists and is a directory: a root that is neither
+ * refuses every attachment, silently, in a message about the file rather than about the config.
+ */
+async function resolveUploadRoot(
+  value: unknown,
+  input: PluginInput,
+): Promise<{ path?: string; error?: string }> {
+  const refuse = (subject: string, reason: string) => ({
+    error: `uploadRoot ${subject} ${reason}`,
+  });
+  if (value === undefined) return {};
+  if (typeof value !== "string" || !value.trim()) {
+    return refuse(
+      JSON.stringify(value),
+      typeof value === "string" ? "is blank" : "is not a string path",
+    );
+  }
+  const dir = value.trim();
+  // The project directory, not the process cwd, for the reason `downloadDir` and `.env.local` are.
+  const resolved = resolve(input.directory, dir);
+  try {
+    const stats = await stat(resolved);
+    if (!stats.isDirectory()) {
+      return refuse(dir, `resolves to ${resolved}, which is not a directory`);
+    }
+  } catch (error) {
+    return refuse(dir, `resolves to ${resolved}, which ${statReason(error)}`);
+  }
+  // Not the `realpath`: the containment check resolves both sides at call time, so a root reached
+  // through a link still matches the files under it, and the configured path is the one to report.
   return { path: resolved };
 }
 
@@ -142,6 +193,10 @@ export default (async (input, options) => {
     options?.downloadDir,
     input,
   );
+  const { path: uploadRoot, error: uploadError } = await resolveUploadRoot(
+    options?.uploadRoot,
+    input,
+  );
   // Only what is still missing once options and environment are combined: telling someone whose url
   // and token are fine to "set OC_MM_URL, OC_MM_TOKEN and OC_MM_TEAM" sends them auditing two
   // settings that were already right. Both sources are named because either one satisfies it.
@@ -159,13 +214,15 @@ export default (async (input, options) => {
     );
   }
   if (downloadError) problems.push(downloadError);
-  if (!url || !token || !team || !downloadDir) {
+  if (uploadError) problems.push(uploadError);
+  // `uploadRoot` is tested through its error, not its absence: unset is the default, not a mistake.
+  if (!url || !token || !team || !downloadDir || uploadError) {
     await log(input, `oc-mm-client disabled: ${problems.join("; ")}`);
     return {};
   }
 
   const client = createMattermostClient({ url, token });
-  const ctx = createMattermostContext({ url, token, team }, client, { downloadDir });
+  const ctx = createMattermostContext({ url, token, team }, client, { downloadDir, uploadRoot });
   try {
     // Probe the server once at load; registering tools we cannot serve would turn every
     // later tool call into an error. `me()` goes first because it is the call that proves the

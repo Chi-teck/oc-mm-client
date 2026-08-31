@@ -44,15 +44,21 @@ async function newProject(): Promise<string> {
 }
 
 /**
- * Starts the plugin on a `downloadDir` it must refuse and returns what was logged. No mock server:
- * the gate returns before anything is probed, and the credentials are only there to prove that the
- * refusal was not about them.
+ * Starts the plugin on options it must refuse and returns what was logged. No mock server: the gate
+ * returns before anything is probed, and the credentials are only there to prove that the refusal
+ * was not about them.
  */
-async function refuse(project: string, downloadDir: unknown): Promise<string> {
-  const options = { url: "https://mm.example.com", token: "tok", team: "my-team", downloadDir };
+async function refuseOptions(project: string, extra: Record<string, unknown>): Promise<string> {
+  const options = { url: "https://mm.example.com", token: "tok", team: "my-team", ...extra };
   expect(await plugin(pluginInput(project), options)).toEqual({});
   return logs.join("\n");
 }
+
+const refuse = (project: string, downloadDir: unknown) => refuseOptions(project, { downloadDir });
+
+/** The `downloadDir` is a good one, so only the upload root can be what the log complains about. */
+const refuseUpload = (project: string, uploadRoot: unknown) =>
+  refuseOptions(project, { downloadDir: DOWNLOAD_DIR, uploadRoot });
 
 /** The plugin's last resort when the log endpoint fails, so a test has to take stderr away first. */
 async function captureStderr<T>(run: () => Promise<T>): Promise<{ value: T; stderr: string }> {
@@ -417,6 +423,102 @@ describe("plugin entry", () => {
     const project = await newProject();
     try {
       expect(await refuse(project, "   ")).toContain('downloadDir "   " is blank');
+    } finally {
+      await rm(project, { recursive: true, force: true });
+    }
+  });
+
+  it("starts with no uploadRoot at all, taking the worktree as the default", async () => {
+    const server = startMockMattermost();
+    const project = await newProject();
+    try {
+      // The one place `uploadRoot` differs from `downloadDir`: absent is the default, not a
+      // mistake, so an existing config keeps working without an edit.
+      const hooks = await plugin(pluginInput(project), {
+        url: server.url,
+        token: "tok",
+        team: "my-team",
+        downloadDir: DOWNLOAD_DIR,
+      });
+      expect(Object.keys(hooks.tool ?? {})).toHaveLength(13);
+      expect(logs.join("\n")).not.toContain("uploadRoot");
+    } finally {
+      await rm(project, { recursive: true, force: true });
+      server.stop();
+    }
+  });
+
+  it("resolves a relative uploadRoot against the project directory, not the process cwd", async () => {
+    const server = startMockMattermost();
+    const project = await newProject();
+    // A name the sandbox the suite chdir'd into does not have: resolved against the cwd this would
+    // be refused as missing, and the plugin would register nothing.
+    await mkdir(join(project, "uploads"));
+    try {
+      const hooks = await plugin(pluginInput(project), {
+        url: server.url,
+        token: "tok",
+        team: "my-team",
+        downloadDir: DOWNLOAD_DIR,
+        uploadRoot: "uploads",
+      });
+      expect(Object.keys(hooks.tool ?? {})).toHaveLength(13);
+      expect(logs.join("\n")).not.toContain("uploadRoot");
+    } finally {
+      await rm(project, { recursive: true, force: true });
+      server.stop();
+    }
+  });
+
+  it("accepts an uploadRoot outside the worktree, which is the documented opt-out", async () => {
+    const server = startMockMattermost();
+    const project = await newProject();
+    try {
+      // Unlike `downloadDir`: nothing is written there, and `"/"` is how a caller keeps the
+      // pre-v0.4.0 behaviour of attaching any file on the machine.
+      const hooks = await plugin(pluginInput(project), {
+        url: server.url,
+        token: "tok",
+        team: "my-team",
+        downloadDir: DOWNLOAD_DIR,
+        uploadRoot: "/",
+      });
+      expect(Object.keys(hooks.tool ?? {})).toHaveLength(13);
+    } finally {
+      await rm(project, { recursive: true, force: true });
+      server.stop();
+    }
+  });
+
+  it("refuses an uploadRoot that does not exist", async () => {
+    const project = await newProject();
+    try {
+      expect(await refuseUpload(project, "missing")).toContain(
+        `uploadRoot missing resolves to ${join(project, "missing")}, which does not exist`,
+      );
+    } finally {
+      await rm(project, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses an uploadRoot that is a regular file", async () => {
+    const project = await newProject();
+    await Bun.write(join(project, "notes.txt"), "in the way");
+    try {
+      expect(await refuseUpload(project, "notes.txt")).toContain(
+        `uploadRoot notes.txt resolves to ${join(project, "notes.txt")}, which is not a directory`,
+      );
+    } finally {
+      await rm(project, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses an uploadRoot that is not a string and says so", async () => {
+    const project = await newProject();
+    try {
+      expect(await refuseUpload(project, ["uploads"])).toContain(
+        'uploadRoot ["uploads"] is not a string path',
+      );
     } finally {
       await rm(project, { recursive: true, force: true });
     }
