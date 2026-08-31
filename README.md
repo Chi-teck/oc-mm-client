@@ -148,7 +148,7 @@ until you edit the tag — and both minors so far ask something of an existing c
 | `mattermost_list_members` | List channel members, optionally fuzzy-matched by username. |
 | `mattermost_get_file` | Download an attachment into `downloadDir` and return the saved path. |
 | `mattermost_mark_read` | Clear a channel's unread state. |
-| `mattermost_create_post` | Post a message, optionally as a thread reply and with file attachments. |
+| `mattermost_create_post` | Post a message, optionally as a thread reply, with file attachments, and scheduled for later (`schedule_at`). |
 | `mattermost_react` | Add or remove an emoji reaction on a post. |
 | `mattermost_edit_post` | Edit or delete one of the token user's own posts. |
 | `mattermost_dm` | Open (or reuse) a direct-message channel with a user. |
@@ -158,6 +158,16 @@ until you edit the tag — and both minors so far ask something of an existing c
 write tools gated by the `permission` block above; `mattermost_api` joins them for any method other
 than `GET`. `mattermost_mark_read` also changes server state but is deliberately ungated — it only
 clears your own unread markers.
+
+`schedule_at` on `mattermost_create_post` takes `"30m"`, `"2h"`, `"3d"`, an ISO 8601 datetime or
+epoch milliseconds — the same grammar as `since` on the reads, added to now instead of subtracted,
+and capped at a year out. A datetime carrying no offset is read as the plugin host's local time; a
+bare *date* is not, since `2027-06-01` is UTC midnight by JavaScript's parsing rule, so write the
+time out when the hour matters. The confirmation prompt names the resolved time and its zone, since
+approving a scheduled post approves a send that happens with nobody watching. Delivery is a
+server-side job, so a message arrives at or shortly after its time, not to the second. There is no tool for the rest of the lifecycle; `mattermost_api`
+covers it: `GET /posts/scheduled/team/{team_id}?includeDirectChannels=true` lists them (including
+the `error_code` of one that failed to send), and `DELETE /posts/schedule/<id>` cancels one.
 
 `mattermost_api` exists so a rare endpoint does not need a tool of its own. It takes a path relative
 to `/api/v4` (`/users/me/status`), expands the `{team_id}` and `{user_id}` placeholders, and returns

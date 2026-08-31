@@ -16,6 +16,14 @@ const ME_ID = "uuuuuuuuuuuuuuuuuuuuuuuuu1";
 const TEAM_ID = "tttttttttttttttttttttttttt";
 const CHANNEL_ID = "ccccccccccccccccccccccccc1";
 const FILE_ID = "ffffffffffffffffffffffff01";
+const SCHEDULED_ID = "sssssssssssssssssssssssss1";
+/**
+ * Absolute, so the exact `scheduled_at` below can be asserted, but derived from the clock rather
+ * than written out: the tool refuses anything past due or more than a year ahead, and a literal
+ * date would eventually become one or the other.
+ */
+const SCHEDULE_AT = Date.now() + 86_400_000;
+const SCHEDULE_ISO = new Date(SCHEDULE_AT).toISOString();
 
 /**
  * A file that exists and is not in the worktree, which is what the default upload root is here:
@@ -66,6 +74,7 @@ interface MockState {
   order: string[];
   uploads: FormData[];
   createdPosts: unknown[];
+  scheduledPosts: unknown[];
   reactions: { user_id: string; emoji_name: string }[];
   membership: ChannelMembership;
   clientConfig: Partial<ClientConfig> | undefined;
@@ -78,6 +87,7 @@ function mockClient(state: Partial<MockState> = {}): Client4 & { state: MockStat
     order: [],
     uploads: [],
     createdPosts: [],
+    scheduledPosts: [],
     reactions: [{ user_id: ME_ID, emoji_name: "eyes" }],
     membership: {
       channel_id: CHANNEL_ID,
@@ -134,6 +144,12 @@ function mockClient(state: Partial<MockState> = {}): Client4 & { state: MockStat
       rec("createPost");
       s.createdPosts.push(post);
       return { id: "newpostttttttttttttttttttttt", message: "x", channel_id: CHANNEL_ID };
+    },
+    createScheduledPost: async (post: unknown, connectionId: string) => {
+      rec(`createScheduledPost(${connectionId})`);
+      s.scheduledPosts.push(post);
+      // `ClientResponse`, not the post itself — the id the tool reports sits under `.data`.
+      return { data: { id: SCHEDULED_ID }, response: undefined, headers: {} };
     },
     addReaction: async (userId: string, postId: string, emojiName: string) => {
       rec("addReaction");
@@ -229,6 +245,97 @@ describe("mattermost_create_post", () => {
       message: "reply",
       root_id: "rrrrrrrrrrrrrrrrrrrrrrrrrr",
     });
+  });
+
+  it("schedules instead of posting when schedule_at is set", async () => {
+    const client = mockClient();
+    const ctx = createMattermostContext(config, client);
+    const { asks, tctx } = recordingCtx();
+    const result = await createPostTool(ctx).execute(
+      { channel: "my-channel", message: "later", schedule_at: SCHEDULE_ISO },
+      tctx,
+    );
+    // The connection id only suppresses the caller's own WebSocket echo, and this client has none.
+    expect(client.state.order).toEqual(["createScheduledPost()"]);
+    expect(client.state.scheduledPosts[0]).toEqual({
+      channel_id: CHANNEL_ID,
+      message: "later",
+      scheduled_at: SCHEDULE_AT,
+    });
+    const local = new Date(SCHEDULE_AT).toLocaleString(undefined, { timeZoneName: "short" });
+    // The zone has to be in there, whatever this machine's zone happens to be: pinning one would
+    // fail on every other developer's box, while a bare `toLocaleString` here would let the zone
+    // be dropped again without a test noticing.
+    expect(local).not.toBe(new Date(SCHEDULE_AT).toLocaleString());
+    expect((asks[0] as { patterns: string[] }).patterns[0]).toContain(`[send at ${local}]`);
+    const output = typeof result === "string" ? result : result.output;
+    expect(output).toBe(
+      `Scheduled for ${local} in my-channel (scheduled post id: ${SCHEDULED_ID})`,
+    );
+  });
+
+  it("keeps root_id when a thread reply is scheduled", async () => {
+    const client = mockClient();
+    const ctx = createMattermostContext(config, client);
+    await createPostTool(ctx).execute(
+      {
+        channel: "my-channel",
+        message: "later reply",
+        thread_root_id: "rrrrrrrrrrrrrrrrrrrrrrrrrr",
+        schedule_at: SCHEDULE_ISO,
+      },
+      recordingCtx().tctx,
+    );
+    expect(client.state.scheduledPosts[0]).toEqual({
+      channel_id: CHANNEL_ID,
+      message: "later reply",
+      root_id: "rrrrrrrrrrrrrrrrrrrrrrrrrr",
+      scheduled_at: SCHEDULE_AT,
+    });
+  });
+
+  it("uploads attachments for a scheduled post too", async () => {
+    await Bun.write("local/tmp/attach.txt", "hello attachment");
+    const client = mockClient();
+    const ctx = createMattermostContext(config, client);
+    const result = await createPostTool(ctx).execute(
+      {
+        channel: "my-channel",
+        message: "later with file",
+        schedule_at: SCHEDULE_ISO,
+        attachments: ["attach.txt"],
+      },
+      recordingCtx().tctx,
+    );
+    expect(client.state.order).toEqual(["getClientConfig", "uploadFile", "createScheduledPost()"]);
+    expect(client.state.scheduledPosts[0]).toEqual({
+      channel_id: CHANNEL_ID,
+      message: "later with file",
+      file_ids: [FILE_ID],
+      scheduled_at: SCHEDULE_AT,
+    });
+    const output = typeof result === "string" ? result : result.output;
+    expect(output).toContain(`scheduled post id: ${SCHEDULED_ID}, 1 file(s)`);
+  });
+
+  it("refuses a past schedule_at before asking or uploading", async () => {
+    await Bun.write("local/tmp/attach.txt", "hello attachment");
+    const client = mockClient();
+    const ctx = createMattermostContext(config, client);
+    const { asks, tctx } = recordingCtx();
+    await expect(
+      createPostTool(ctx).execute(
+        {
+          channel: "my-channel",
+          message: "too late",
+          schedule_at: "2020-01-01T10:00:00Z",
+          attachments: ["attach.txt"],
+        },
+        tctx,
+      ),
+    ).rejects.toThrow("Cannot schedule in the past: 2020-01-01T10:00:00Z resolved to 2020-01-01");
+    expect(asks).toEqual([]);
+    expect(client.state.order).toEqual([]);
   });
 
   it("throws on missing attachment file", async () => {

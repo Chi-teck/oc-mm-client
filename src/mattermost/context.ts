@@ -11,6 +11,8 @@ import type { MattermostEnv } from "./env.js";
 export const ID_SHAPE = /^[a-z0-9]{26}$/;
 
 const CACHE_TTL = 60_000;
+/** How far ahead `parseSchedule` will schedule — see the throw there for why there is a ceiling. */
+const MAX_SCHEDULE_DAYS = 365;
 const MAX_POSTS = 30;
 const MAX_BODY = 500;
 const FULL_HINT = "pass full=true for the whole message";
@@ -58,6 +60,46 @@ export function parseSince(input: string, now = Date.now()): number {
   const parsed = Date.parse(input);
   if (!Number.isNaN(parsed)) return parsed;
   throw new Error(`Invalid since: ${input} (use "2h", "30m", ISO date, or epoch ms)`);
+}
+
+/**
+ * `parseSince`'s future-facing sibling: the same grammar, added to `now` instead of subtracted, so
+ * the agent writes one time vocabulary across tools. Epoch milliseconds out, which is also what the
+ * `scheduled_at` wire field takes. Bounded on both sides, because the unit is the thing a caller
+ * gets wrong: seconds land in 1970 and microseconds in the year 59009, and neither is a schedule.
+ */
+export function parseSchedule(input: string, now = Date.now()): number {
+  const rel = /^(\d+)([smhd])$/.exec(input);
+  let at: number;
+  if (rel) {
+    const n = Number(rel[1]);
+    const unit = { s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000 }[
+      rel[2] as "s" | "m" | "h" | "d"
+    ];
+    at = now + n * unit;
+  } else if (/^\d+$/.test(input)) {
+    at = Number(input);
+  } else {
+    at = Date.parse(input);
+    if (Number.isNaN(at)) {
+      throw new Error(`Invalid schedule_at: ${input} (use "30m", "2h", ISO date, or epoch ms)`);
+    }
+  }
+  // Name both halves: the caller wrote a date, the server would have to send it in the past.
+  if (at <= now) {
+    throw new Error(`Cannot schedule in the past: ${input} resolved to ${relTime(at, now)}`);
+  }
+  // A ceiling as well as a floor. Epoch microseconds are a future timestamp by every check above,
+  // and they schedule for the year 59009: the post is simply never sent, and nothing else in the
+  // tool would notice. Epoch nanoseconds are past what `Date` can even represent, so the resolved
+  // value is printed as a bare number here — `toISOString` throws on those, and the prompt that
+  // would have shown the caller "Invalid Date" is exactly what this check exists to prevent.
+  if (at > now + MAX_SCHEDULE_DAYS * 86_400_000) {
+    throw new Error(
+      `Cannot schedule more than ${MAX_SCHEDULE_DAYS} days out: ${input} resolved to epoch ms ${at} — a value this far ahead is usually microseconds or nanoseconds mistaken for milliseconds`,
+    );
+  }
+  return at;
 }
 
 export function relTime(ms: number, now = Date.now()): string {

@@ -2,7 +2,7 @@ import { realpath } from "node:fs/promises";
 import { basename, resolve } from "node:path";
 import { tool } from "@opencode-ai/plugin";
 import { contains } from "../../paths.js";
-import { humanSize, type MattermostContext, unreadCount } from "../context.js";
+import { humanSize, type MattermostContext, parseSchedule, unreadCount } from "../context.js";
 import { confirmWrite } from "./confirm.js";
 import { describeClientError } from "./registry.js";
 
@@ -105,20 +105,30 @@ async function uploadAttachments(
 export function createPostTool(ctx: MattermostContext) {
   return tool({
     description:
-      "Post a message to a Mattermost channel, optionally as a thread reply (thread_root_id) with file attachments (paths relative to the working directory).",
+      "Post a message to a Mattermost channel, optionally as a thread reply (thread_root_id) with file attachments (paths relative to the working directory), now or scheduled for later (schedule_at).",
     args: {
       channel: tool.schema.string().describe("Channel name or 26-char id"),
       message: tool.schema.string().describe("Message text (markdown supported)"),
       thread_root_id: tool.schema.string().optional().describe("Root post id to reply in a thread"),
+      schedule_at: tool.schema
+        .string()
+        .optional()
+        .describe('Send later instead of now: "30m", "2h", "3d", ISO date, or epoch ms'),
       attachments: tool.schema
         .array(tool.schema.string())
         .optional()
         .describe("File paths to attach"),
     },
-    execute: async ({ channel, message, thread_root_id: rootId, attachments }, tctx) => {
+    execute: async (
+      { channel, message, thread_root_id: rootId, schedule_at: scheduleAt, attachments },
+      tctx,
+    ) => {
       if (!message.trim() && !attachments?.length) {
         throw new Error("Refusing to post an empty message with no attachments");
       }
+      // Parsed here for the same reason the attachment paths are: a time the server was never going
+      // to accept should not cost a human a decision, nor leave uploads orphaned behind a refusal.
+      const at = scheduleAt === undefined ? undefined : parseSchedule(scheduleAt);
       // Before the channel lookup and before the prompt, both. A path that was never going to be
       // allowed should not cost a human a decision, and a refusal that landed mid-upload would
       // leave the files before it orphaned on the server; that it also saves a round trip on the
@@ -137,20 +147,38 @@ export function createPostTool(ctx: MattermostContext) {
       // Spell out the resolved paths: they are confined to the root above, so approving the post is
       // also approving the upload of these exact files.
       const summary = files.length ? ` [files: ${files.map((f) => f.abs).join(", ")}]` : "";
+      // Name the time in the prompt: approving a scheduled post is approving a send that happens
+      // later, with nobody watching. With the zone, because the clock is this host's and the human
+      // reading the prompt may not be on it — "10:00 AM" alone is only half an instant.
+      const localAt =
+        at === undefined
+          ? undefined
+          : new Date(at).toLocaleString(undefined, { timeZoneName: "short" });
       // Confirm before uploading, so a declined post leaves no orphaned files on the server.
       await confirmWrite(
         tctx,
         "mattermost_create_post",
-        `mattermost_create_post ${resolved.name}${rootId ? ` (thread ${rootId})` : ""}: ${message.slice(0, 120)}${summary}`,
+        `mattermost_create_post ${resolved.name}${rootId ? ` (thread ${rootId})` : ""}: ${message.slice(0, 120)}${summary}${localAt ? ` [send at ${localAt}]` : ""}`,
       );
       const fileIds = files.length ? await uploadAttachments(ctx, resolved.id, files) : [];
-      const post = await ctx.client.createPost({
+      const payload = {
         channel_id: resolved.id,
         message,
         ...(rootId ? { root_id: rootId } : {}),
         ...(fileIds.length ? { file_ids: fileIds } : {}),
-      });
+      };
       const filesNote = fileIds.length ? `, ${fileIds.length} file(s)` : "";
+      if (at !== undefined) {
+        // `connectionId` is required by the signature and only suppresses the caller's own
+        // WebSocket echo; this client has no socket, so "". The response is a `ClientResponse`
+        // rather than the post itself, so the id sits under `.data`.
+        const { data } = await ctx.client.createScheduledPost({ ...payload, scheduled_at: at }, "");
+        return {
+          title: `Mattermost: schedule post to ${resolved.name}`,
+          output: `Scheduled for ${localAt} in ${resolved.name} (scheduled post id: ${data.id}${filesNote})`,
+        };
+      }
+      const post = await ctx.client.createPost(payload);
       return {
         title: `Mattermost: post to ${resolved.name}`,
         output: `Posted to ${resolved.name} (post id: ${post.id}${filesNote})`,

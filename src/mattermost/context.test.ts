@@ -2,7 +2,13 @@ import { describe, expect, it } from "bun:test";
 import { type Client4, ClientError } from "@mattermost/client";
 import type { ServerChannel } from "@mattermost/types/channels";
 import type { ServerError } from "@mattermost/types/errors";
-import { createMattermostContext, parseSince, unreadCount, withTimeout } from "./context.js";
+import {
+  createMattermostContext,
+  parseSchedule,
+  parseSince,
+  unreadCount,
+  withTimeout,
+} from "./context.js";
 import type { MattermostEnv } from "./env.js";
 
 const config: MattermostEnv = { url: "https://mm.example.com", token: "tok", team: "my-team" };
@@ -82,6 +88,52 @@ describe("parseSince", () => {
   it("throws on garbage", () => {
     expect(() => parseSince("soon", now)).toThrow("Invalid since");
     expect(() => parseSince("", now)).toThrow("Invalid since");
+  });
+});
+
+describe("parseSchedule", () => {
+  const now = 1_800_000_000_000;
+
+  // Exact values, not ranges: milliseconds is the wire unit, and a seconds/ms slip would schedule
+  // for the year 57000 with nothing else in the tool to catch it.
+  it("adds relative offsets to now", () => {
+    expect(parseSchedule("2h", now)).toBe(now + 7_200_000);
+    expect(parseSchedule("30m", now)).toBe(now + 1_800_000);
+    expect(parseSchedule("45s", now)).toBe(now + 45_000);
+    expect(parseSchedule("3d", now)).toBe(now + 259_200_000);
+  });
+
+  it("takes epoch ms and ISO dates as absolute", () => {
+    expect(parseSchedule("1800000000001", now)).toBe(1_800_000_000_001);
+    expect(parseSchedule("2027-06-01T10:00:00Z", now)).toBe(Date.parse("2027-06-01T10:00:00Z"));
+  });
+
+  it("refuses a time that is not in the future, naming what was parsed", () => {
+    expect(() => parseSchedule("2026-08-16T10:00:00Z", now)).toThrow(
+      "Cannot schedule in the past: 2026-08-16T10:00:00Z resolved to 2026-08-16",
+    );
+    expect(() => parseSchedule("1799999999999", now)).toThrow("Cannot schedule in the past");
+    // The boundary: `now` itself is already too late, and so is a zero offset.
+    expect(() => parseSchedule(String(now), now)).toThrow("Cannot schedule in the past");
+    expect(() => parseSchedule("0m", now)).toThrow("Cannot schedule in the past");
+  });
+
+  it("refuses a time too far ahead to be a schedule", () => {
+    // Epoch microseconds: in the future by every other check, and the year 59009 by this one.
+    expect(() => parseSchedule("1800000000000000", now)).toThrow(
+      "Cannot schedule more than 365 days out: 1800000000000000 resolved to epoch ms 1800000000000000",
+    );
+    // Nanoseconds are past what `Date` can represent — the message must not try to format them.
+    expect(() => parseSchedule("1800000000000000000", now)).toThrow("Cannot schedule more than");
+    expect(() => parseSchedule("999999999d", now)).toThrow("Cannot schedule more than");
+    // The boundary holds: a year out is fine, a year and a day is not.
+    expect(parseSchedule("365d", now)).toBe(now + 365 * 86_400_000);
+    expect(() => parseSchedule("366d", now)).toThrow("Cannot schedule more than");
+  });
+
+  it("throws on garbage", () => {
+    expect(() => parseSchedule("soon", now)).toThrow("Invalid schedule_at");
+    expect(() => parseSchedule("", now)).toThrow("Invalid schedule_at");
   });
 });
 
