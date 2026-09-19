@@ -21,7 +21,7 @@ mkdir -p .opencode/mm-files
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": [["github:Chi-teck/oc-mm-client#v0.4.0", { "downloadDir": ".opencode/mm-files" }]],
+  "plugin": [["github:Chi-teck/oc-mm-client#v0.5.1", { "downloadDir": ".opencode/mm-files" }]],
   "permission": {
     "mattermost_create_post": "ask",
     "mattermost_react": "ask",
@@ -32,7 +32,7 @@ mkdir -p .opencode/mm-files
 }
 ```
 
-The `#v0.4.0` tag is deliberate. A bare `github:Chi-teck/oc-mm-client` tracks the default branch,
+The `#v0.5.1` tag is deliberate. A bare `github:Chi-teck/oc-mm-client` tracks the default branch,
 so an unrelated push changes the code under a running install. opencode caches by the literal spec
 string, so bumping the tag is also what triggers a re-download.
 
@@ -59,7 +59,7 @@ environment:
 {
   "plugin": [
     [
-      "github:Chi-teck/oc-mm-client#v0.4.0",
+      "github:Chi-teck/oc-mm-client#v0.5.1",
       {
         "url": "https://mattermost.example.com",
         "token": "…",
@@ -126,8 +126,16 @@ Use real environment variables or plugin options instead.
 ## Upgrading
 
 opencode caches a plugin by the literal spec string, so nothing changes under a running install
-until you edit the tag — and both minors so far ask something of an existing config.
+until you edit the tag; what each release asks of an existing config is below.
 
+- **v0.5.1** is v0.5.0's code with the release metadata that tag shipped without: `v0.5.0` still
+  names `#v0.4.0` in its own install example and reports `0.4.0` as its version. Install this one
+  instead; nothing else differs, and nothing is asked of an existing config beyond the tag.
+- **v0.5.0** adds `schedule_at` to `mattermost_create_post`: the post is handed to the server to go
+  out later — `"2h"`, an ISO datetime or epoch ms, up to a year out — instead of immediately.
+  Nothing else changes, and no config edit is required: the existing `mattermost_create_post` rule
+  gates a scheduled post like any other, and the confirmation names the resolved time and its zone,
+  since the send itself happens unattended.
 - **v0.4.0** confines `mattermost_create_post` attachments to `uploadRoot`, which defaults to the
   git worktree. Attaching `/tmp/report.pdf`, a file in a sibling checkout, or a path reached through
   a symlink that leaves the project now fails with an error naming the option. Nothing else changes:
