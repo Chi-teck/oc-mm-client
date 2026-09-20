@@ -231,6 +231,43 @@ export function reactTool(ctx: MattermostContext) {
   });
 }
 
+export function followThreadTool(ctx: MattermostContext) {
+  return tool({
+    description: "Follow a Mattermost thread, so the bot stays subscribed to its replies.",
+    args: {
+      thread_root_id: tool.schema.string().describe("Root post id of the thread"),
+    },
+    execute: async ({ thread_root_id: rootId }) => {
+      const [me, team] = await Promise.all([ctx.me(), ctx.team()]);
+      await ctx.client.updateThreadFollowForUser(me.id, team.id, rootId, true);
+      return {
+        title: "Mattermost: follow thread",
+        output: `Following thread ${rootId}`,
+      };
+    },
+  });
+}
+
+export function unfollowThreadTool(ctx: MattermostContext) {
+  return tool({
+    description:
+      "Stop following a Mattermost thread — the way out of a conversation the bot was pulled into.",
+    args: {
+      thread_root_id: tool.schema.string().describe("Root post id of the thread"),
+    },
+    execute: async ({ thread_root_id: rootId }) => {
+      const [me, team] = await Promise.all([ctx.me(), ctx.team()]);
+      // The server answers 200 whether or not the thread was followed, and no check runs first:
+      // unlike a reaction removal, the end state is the one that was asked for either way.
+      await ctx.client.updateThreadFollowForUser(me.id, team.id, rootId, false);
+      return {
+        title: "Mattermost: unfollow thread",
+        output: `Left thread ${rootId} — posting in it again re-follows it.`,
+      };
+    },
+  });
+}
+
 export function markReadTool(ctx: MattermostContext) {
   return tool({
     description: "Mark a Mattermost channel as read (clears its unread state).",

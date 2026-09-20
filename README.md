@@ -21,7 +21,7 @@ mkdir -p .opencode/mm-files
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": [["github:Chi-teck/oc-mm-client#v0.5.1", { "downloadDir": ".opencode/mm-files" }]],
+  "plugin": [["github:Chi-teck/oc-mm-client#v0.6.0", { "downloadDir": ".opencode/mm-files" }]],
   "permission": {
     "mattermost_create_post": "ask",
     "mattermost_react": "ask",
@@ -32,7 +32,7 @@ mkdir -p .opencode/mm-files
 }
 ```
 
-The `#v0.5.1` tag is deliberate. A bare `github:Chi-teck/oc-mm-client` tracks the default branch,
+The `#v0.6.0` tag is deliberate. A bare `github:Chi-teck/oc-mm-client` tracks the default branch,
 so an unrelated push changes the code under a running install. opencode caches by the literal spec
 string, so bumping the tag is also what triggers a re-download.
 
@@ -59,7 +59,7 @@ environment:
 {
   "plugin": [
     [
-      "github:Chi-teck/oc-mm-client#v0.5.1",
+      "github:Chi-teck/oc-mm-client#v0.6.0",
       {
         "url": "https://mattermost.example.com",
         "token": "…",
@@ -128,6 +128,12 @@ Use real environment variables or plugin options instead.
 opencode caches a plugin by the literal spec string, so nothing changes under a running install
 until you edit the tag; what each release asks of an existing config is below.
 
+- **v0.6.0** adds `mattermost_follow_thread` and `mattermost_unfollow_thread`: the bot can subscribe
+  to a thread's replies and, the half that was missing, leave one it was pulled into. Both are
+  ungated like `mattermost_mark_read`, so no config edit is required. A `permission` rule cannot
+  turn that into a prompt — opencode evaluates the block only for tools that raise a permission
+  request, and these two deliberately do not — but `"mattermost_unfollow_thread": "deny"` drops the
+  tool from the agent's toolset outright, which is the way to withhold one of them.
 - **v0.5.1** is v0.5.0's code with the release metadata that tag shipped without: `v0.5.0` still
   names `#v0.4.0` in its own install example and reports `0.4.0` as its version. Install this one
   instead; nothing else differs, and nothing is asked of an existing config beyond the tag.
@@ -156,6 +162,8 @@ until you edit the tag; what each release asks of an existing config is below.
 | `mattermost_list_members` | List channel members, optionally fuzzy-matched by username. |
 | `mattermost_get_file` | Download an attachment into `downloadDir` and return the saved path. |
 | `mattermost_mark_read` | Clear a channel's unread state. |
+| `mattermost_follow_thread` | Follow a thread, so its replies keep reaching the bot. |
+| `mattermost_unfollow_thread` | Stop following a thread. |
 | `mattermost_create_post` | Post a message, optionally as a thread reply, with file attachments, and scheduled for later (`schedule_at`). |
 | `mattermost_react` | Add or remove an emoji reaction on a post. |
 | `mattermost_edit_post` | Edit or delete one of the token user's own posts. |
@@ -164,8 +172,15 @@ until you edit the tag; what each release asks of an existing config is below.
 
 `mattermost_create_post`, `mattermost_react`, `mattermost_edit_post` and `mattermost_dm` are the
 write tools gated by the `permission` block above; `mattermost_api` joins them for any method other
-than `GET`. `mattermost_mark_read` also changes server state but is deliberately ungated — it only
-clears your own unread markers.
+than `GET`. `mattermost_mark_read`, `mattermost_follow_thread` and `mattermost_unfollow_thread` also
+change server state but are deliberately ungated: they touch only your own unread markers and your
+own thread subscriptions.
+
+Posting into a thread follows it again, so an unfollow has to be the last write of a turn that also
+replies there. No tool reads follow state back, but `mattermost_api` does:
+`GET /users/me/teams/{team_id}/threads/<root_id>` answers 200 while you follow the thread and 404
+once you do not — and 404 either way for a root post nobody has replied to yet, which is not a
+thread the server tracks.
 
 `schedule_at` on `mattermost_create_post` takes `"30m"`, `"2h"`, `"3d"`, an ISO 8601 datetime or
 epoch milliseconds — the same grammar as `since` on the reads, added to now instead of subtracted,

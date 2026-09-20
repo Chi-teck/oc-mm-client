@@ -1,6 +1,6 @@
 {
   "name": "oc-mm-client",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "description": "Mattermost client plugin for opencode",
   "type": "module",
   "repository": {

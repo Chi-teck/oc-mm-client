@@ -109,7 +109,7 @@ describe("plugin entry", () => {
         downloadDir: DOWNLOAD_DIR,
       });
       expect(Object.keys(hooks.tool ?? {})).toContain("mattermost_read_posts");
-      expect(Object.keys(hooks.tool ?? {})).toHaveLength(13);
+      expect(Object.keys(hooks.tool ?? {})).toHaveLength(15);
       expect(server.paths).toContain("/api/v4/users/me");
       expect(server.paths).toContain("/api/v4/teams/name/my-team");
     } finally {
@@ -213,7 +213,7 @@ describe("plugin entry", () => {
     process.env.OC_MM_TEAM = "my-team";
     try {
       const hooks = await plugin(input, { downloadDir: DOWNLOAD_DIR });
-      expect(Object.keys(hooks.tool ?? {})).toHaveLength(13);
+      expect(Object.keys(hooks.tool ?? {})).toHaveLength(15);
     } finally {
       for (const key of OC_MM_KEYS) delete process.env[key];
       server.stop();
@@ -229,7 +229,7 @@ describe("plugin entry", () => {
     );
     try {
       const hooks = await plugin(pluginInput(project), { downloadDir: DOWNLOAD_DIR });
-      expect(Object.keys(hooks.tool ?? {})).toHaveLength(13);
+      expect(Object.keys(hooks.tool ?? {})).toHaveLength(15);
       // The file's credentials stay out of the environment opencode hands to spawned processes.
       for (const key of OC_MM_KEYS) expect(process.env[key]).toBeUndefined();
     } finally {
@@ -440,7 +440,7 @@ describe("plugin entry", () => {
         team: "my-team",
         downloadDir: DOWNLOAD_DIR,
       });
-      expect(Object.keys(hooks.tool ?? {})).toHaveLength(13);
+      expect(Object.keys(hooks.tool ?? {})).toHaveLength(15);
       expect(logs.join("\n")).not.toContain("uploadRoot");
     } finally {
       await rm(project, { recursive: true, force: true });
@@ -462,7 +462,7 @@ describe("plugin entry", () => {
         downloadDir: DOWNLOAD_DIR,
         uploadRoot: "uploads",
       });
-      expect(Object.keys(hooks.tool ?? {})).toHaveLength(13);
+      expect(Object.keys(hooks.tool ?? {})).toHaveLength(15);
       expect(logs.join("\n")).not.toContain("uploadRoot");
     } finally {
       await rm(project, { recursive: true, force: true });
@@ -483,7 +483,7 @@ describe("plugin entry", () => {
         downloadDir: DOWNLOAD_DIR,
         uploadRoot: "/",
       });
-      expect(Object.keys(hooks.tool ?? {})).toHaveLength(13);
+      expect(Object.keys(hooks.tool ?? {})).toHaveLength(15);
     } finally {
       await rm(project, { recursive: true, force: true });
       server.stop();
@@ -548,7 +548,7 @@ describe("plugin entry", () => {
     process.env.OC_MM_TEAM = "my-team";
     try {
       const hooks = await plugin(pluginInput(project), { downloadDir: DOWNLOAD_DIR });
-      expect(Object.keys(hooks.tool ?? {})).toHaveLength(13);
+      expect(Object.keys(hooks.tool ?? {})).toHaveLength(15);
       expect(server.paths).toContain("/api/v4/teams/name/my-team");
     } finally {
       for (const key of OC_MM_KEYS) delete process.env[key];
@@ -569,7 +569,7 @@ describe("plugin entry", () => {
     process.env.OC_MM_TEAM = "";
     try {
       const hooks = await plugin(pluginInput(project), { downloadDir: DOWNLOAD_DIR });
-      expect(Object.keys(hooks.tool ?? {})).toHaveLength(13);
+      expect(Object.keys(hooks.tool ?? {})).toHaveLength(15);
       expect(server.paths).toContain("/api/v4/teams/name/my-team");
     } finally {
       for (const key of OC_MM_KEYS) delete process.env[key];

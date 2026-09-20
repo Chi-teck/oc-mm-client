@@ -6,7 +6,13 @@ import { listChannelsTool } from "./channels.js";
 import { getFileTool } from "./files.js";
 import { dmTool, editPostTool, listMembersTool, searchTool } from "./misc.js";
 import { getPostTool, readPostsTool, readUnreadTool } from "./read.js";
-import { createPostTool, markReadTool, reactTool } from "./write.js";
+import {
+  createPostTool,
+  followThreadTool,
+  markReadTool,
+  reactTool,
+  unfollowThreadTool,
+} from "./write.js";
 
 /**
  * Client4 throws the server's own sentence and nothing else — "Unable to get the post." names
@@ -43,6 +49,8 @@ export function createTools(ctx: MattermostContext): Record<string, ToolDefiniti
     mattermost_mark_read: markReadTool(ctx),
     mattermost_create_post: createPostTool(ctx),
     mattermost_react: reactTool(ctx),
+    mattermost_follow_thread: followThreadTool(ctx),
+    mattermost_unfollow_thread: unfollowThreadTool(ctx),
     mattermost_get_file: getFileTool(ctx),
     mattermost_edit_post: editPostTool(ctx),
     mattermost_search: searchTool(ctx),

@@ -9,12 +9,19 @@ import type { ToolContext } from "@opencode-ai/plugin";
 import { tool } from "@opencode-ai/plugin";
 import { createMattermostContext } from "../context.js";
 import type { MattermostEnv } from "../env.js";
-import { createPostTool, markReadTool, reactTool } from "./write.js";
+import {
+  createPostTool,
+  followThreadTool,
+  markReadTool,
+  reactTool,
+  unfollowThreadTool,
+} from "./write.js";
 
 const config: MattermostEnv = { url: "https://mm.example.com", token: "tok", team: "my-team" };
 const ME_ID = "uuuuuuuuuuuuuuuuuuuuuuuuu1";
 const TEAM_ID = "tttttttttttttttttttttttttt";
 const CHANNEL_ID = "ccccccccccccccccccccccccc1";
+const ROOT_ID = "rrrrrrrrrrrrrrrrrrrrrrrrr1";
 const FILE_ID = "ffffffffffffffffffffffff01";
 const SCHEDULED_ID = "sssssssssssssssssssssssss1";
 /**
@@ -164,6 +171,16 @@ function mockClient(state: Partial<MockState> = {}): Client4 & { state: MockStat
     getReactionsForPost: async (postId: string) => {
       rec("getReactionsForPost");
       return s.reactions.map((r) => ({ ...r, post_id: postId }));
+    },
+    updateThreadFollowForUser: async (
+      userId: string,
+      teamId: string,
+      threadId: string,
+      state: boolean,
+    ) => {
+      rec("updateThreadFollowForUser");
+      s.order.push(`${userId}:${teamId}:${threadId}:${state}`);
+      return { status: "ok" };
     },
     viewMyChannel: async (channelId: string) => {
       rec("viewMyChannel");
@@ -599,6 +616,57 @@ describe("mattermost_react", () => {
     );
     expect(asks).toHaveLength(1);
     expect(client.state.order).toEqual(["getReactionsForPost"]);
+  });
+});
+
+describe("mattermost_follow_thread", () => {
+  it("follows with the bot's own id and the configured team", async () => {
+    const client = mockClient();
+    const ctx = createMattermostContext(config, client);
+    const result = await followThreadTool(ctx).execute({ thread_root_id: ROOT_ID }, toolCtx());
+    // The team is the assertion that matters: it comes from config, never from the post.
+    expect(client.state.order).toEqual([
+      "updateThreadFollowForUser",
+      `${ME_ID}:${TEAM_ID}:${ROOT_ID}:true`,
+    ]);
+    const output = typeof result === "string" ? result : result.output;
+    expect(output).toBe(`Following thread ${ROOT_ID}`);
+  });
+
+  it("unfollows with state false", async () => {
+    const client = mockClient();
+    const ctx = createMattermostContext(config, client);
+    const result = await unfollowThreadTool(ctx).execute({ thread_root_id: ROOT_ID }, toolCtx());
+    expect(client.state.order).toEqual([
+      "updateThreadFollowForUser",
+      `${ME_ID}:${TEAM_ID}:${ROOT_ID}:false`,
+    ]);
+    const output = typeof result === "string" ? result : result.output;
+    expect(output).toBe(`Left thread ${ROOT_ID} — posting in it again re-follows it.`);
+  });
+
+  it("neither asks", async () => {
+    // Deliberate, not an oversight: following changes only the bot's own subscriptions, and the
+    // exit gesture has to work in a host that auto-rejects prompts. This test fails the moment a
+    // `confirmWrite` is added to either tool.
+    const client = mockClient();
+    const ctx = createMattermostContext(config, client);
+    await followThreadTool(ctx).execute({ thread_root_id: ROOT_ID }, rejectingCtx());
+    await unfollowThreadTool(ctx).execute({ thread_root_id: ROOT_ID }, rejectingCtx());
+    expect(client.state.order).toEqual([
+      "updateThreadFollowForUser",
+      `${ME_ID}:${TEAM_ID}:${ROOT_ID}:true`,
+      "updateThreadFollowForUser",
+      `${ME_ID}:${TEAM_ID}:${ROOT_ID}:false`,
+    ]);
+  });
+
+  it("requires a thread_root_id (zod)", () => {
+    const client = mockClient();
+    const ctx = createMattermostContext(config, client);
+    for (const args of [followThreadTool(ctx).args, unfollowThreadTool(ctx).args]) {
+      expect(tool.schema.object(args).safeParse({}).success).toBe(false);
+    }
   });
 });
 
