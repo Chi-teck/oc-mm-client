@@ -1,11 +1,12 @@
-import { tool } from "@opencode-ai/plugin";
+import { z } from "zod";
 import type { MattermostContext } from "../context.js";
+import { tool } from "./types.js";
 
 export function listChannelsTool(ctx: MattermostContext) {
   return tool({
     description:
       "List the Mattermost channels this bot is a member of, as `name — display_name [type]`.",
-    args: {},
+    input: z.object({}),
     execute: async () => {
       const team = await ctx.team();
       const channels = await ctx.client.getMyChannels(team.id);

@@ -2,10 +2,10 @@ import { describe, expect, it } from "bun:test";
 import { type Client4, ClientError } from "@mattermost/client";
 import type { ServerChannel } from "@mattermost/types/channels";
 import type { Post } from "@mattermost/types/posts";
-import type { ToolContext } from "@opencode-ai/plugin";
 import { createMattermostContext } from "../context.js";
 import type { MattermostEnv } from "../env.js";
 import { dmTool, editPostTool, listMembersTool, searchTool } from "./misc.js";
+import type { MmToolContext } from "./types.js";
 
 const config: MattermostEnv = { url: "https://mm.example.com", token: "tok", team: "my-team" };
 const ME_ID = "uuuuuuuuuuuuuuuuuuuuuuuuu1";
@@ -13,17 +13,10 @@ const ALICE_ID = "uuuuuuuuuuuuuuuuuuuuuuuuu2";
 const TEAM_ID = "tttttttttttttttttttttttttt";
 const CHANNEL_ID = "ccccccccccccccccccccccccc1";
 
-const toolCtx = (onAsk?: (input: unknown) => Promise<void>) =>
-  ({
-    sessionID: "s",
-    messageID: "m",
-    agent: "a",
-    directory: "local/tmp",
-    worktree: process.cwd(),
-    abort: new AbortController().signal,
-    metadata: () => {},
-    ask: onAsk ?? (async () => {}),
-  }) as ToolContext;
+const toolCtx = (onAsk?: (input: unknown) => Promise<void>): MmToolContext => ({
+  signal: new AbortController().signal,
+  confirm: (permission, summary) => (onAsk ?? (async () => {}))({ permission, summary }),
+});
 
 function recordingCtx() {
   const asks: unknown[] = [];
@@ -286,7 +279,7 @@ describe("mattermost_edit_post", () => {
       { post_id: "ppppppppppppppppppppppppp1", action: "edit", message: "fixed" },
       tctx,
     );
-    expect((asks[0] as { patterns: string[] }).patterns[0]).toBe(
+    expect((asks[0] as { summary: string }).summary).toBe(
       "mattermost_edit_post edit ppppppppppppppppppppppppp1 in my-channel: old body → fixed",
     );
   });
@@ -299,7 +292,7 @@ describe("mattermost_edit_post", () => {
       { post_id: "ppppppppppppppppppppppppp1", action: "delete" },
       tctx,
     );
-    expect((asks[0] as { patterns: string[] }).patterns[0]).toBe(
+    expect((asks[0] as { summary: string }).summary).toBe(
       "mattermost_edit_post delete ppppppppppppppppppppppppp1 in my-channel: old body",
     );
   });
@@ -313,7 +306,7 @@ describe("mattermost_edit_post", () => {
       { post_id: "ppppppppppppppppppppppppp1", action: "edit", message: "next" },
       tctx,
     );
-    const summary = (asks[0] as { patterns: string[] }).patterns[0] ?? "";
+    const summary = (asks[0] as { summary: string }).summary;
     expect(summary).not.toContain("\n");
     expect(summary).toBe(
       "mattermost_edit_post edit ppppppppppppppppppppppppp1 in my-channel: " +
@@ -330,7 +323,7 @@ describe("mattermost_edit_post", () => {
       { post_id: "ppppppppppppppppppppppppp1", action: "edit", message: "y".repeat(300) },
       tctx,
     );
-    const summary = (asks[0] as { patterns: string[] }).patterns[0] ?? "";
+    const summary = (asks[0] as { summary: string }).summary;
     expect(summary).toContain("x".repeat(120));
     expect(summary).not.toContain("x".repeat(121));
     expect(summary).toContain("y".repeat(120));
@@ -372,7 +365,7 @@ describe("mattermost_edit_post", () => {
       { post_id: "ppppppppppppppppppppppppp1", action: "delete" },
       tctx,
     );
-    expect((asks[0] as { patterns: string[] }).patterns[0]).toBe(
+    expect((asks[0] as { summary: string }).summary).toBe(
       "mattermost_edit_post delete ppppppppppppppppppppppppp1",
     );
     const output = typeof result === "string" ? result : result.output;

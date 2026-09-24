@@ -1,23 +1,17 @@
 import { describe, expect, it } from "bun:test";
 import { type Client4, ClientError } from "@mattermost/client";
 import type { ServerError } from "@mattermost/types/errors";
-import type { ToolContext } from "@opencode-ai/plugin";
 import { createMattermostContext } from "../context.js";
 import type { MattermostEnv } from "../env.js";
 import { createTools, describeClientError } from "./registry.js";
+import type { MmToolContext } from "./types.js";
 
 const config: MattermostEnv = { url: "https://mm.example.com", token: "tok", team: "my-team" };
 
-const toolCtx = {
-  sessionID: "s",
-  messageID: "m",
-  agent: "a",
-  directory: "/tmp/opencode",
-  worktree: "/tmp/opencode",
-  abort: new AbortController().signal,
-  metadata: () => {},
-  ask: async () => {},
-} as ToolContext;
+const toolCtx: MmToolContext = {
+  signal: new AbortController().signal,
+  confirm: async () => {},
+};
 
 function clientError(data: Partial<ServerError> = {}): ClientError {
   return new ClientError(config.url, {

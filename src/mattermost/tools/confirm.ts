@@ -1,14 +1,9 @@
-import type { ToolContext } from "@opencode-ai/plugin";
+import type { MmToolContext } from "./types.js";
 
 export async function confirmWrite(
-  tctx: ToolContext,
+  tctx: MmToolContext,
   permission: string,
   summary: string,
 ): Promise<void> {
-  await tctx.ask({
-    permission,
-    patterns: [summary],
-    always: [],
-    metadata: { summary },
-  });
+  await tctx.confirm(permission, summary);
 }

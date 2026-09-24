@@ -1,6 +1,7 @@
-import { tool } from "@opencode-ai/plugin";
+import { z } from "zod";
 import { type MattermostContext, truncate } from "../context.js";
 import { confirmWrite } from "./confirm.js";
+import { tool } from "./types.js";
 
 const MAX_OUTPUT = 4000;
 const MAX_ERROR = 500;
@@ -62,22 +63,22 @@ export function apiTool(ctx: MattermostContext) {
   return tool({
     description:
       "Fallback for Mattermost REST endpoints that have no dedicated tool: send a raw request under /api/v4 and return the response body. Prefer a dedicated mattermost_* tool whenever one covers the task — those resolve channel names and format the output for reading. Non-GET methods ask for permission.",
-    args: {
-      path: tool.schema
+    input: z.object({
+      path: z
         .string()
         .describe(
           'Endpoint under /api/v4, e.g. "/users/me/status" — may carry a query string and the {team_id} and {user_id} placeholders',
         ),
-      method: tool.schema
+      method: z
         .enum(["GET", "POST", "PUT", "PATCH", "DELETE"])
         .optional()
         .describe("HTTP method (default GET)"),
-      body: tool.schema.string().optional().describe("Request body as a JSON string"),
-      full: tool.schema
+      body: z.string().optional().describe("Request body as a JSON string"),
+      full: z
         .boolean()
         .optional()
         .describe(`Print the whole response instead of cutting it at ${MAX_OUTPUT} chars`),
-    },
+    }),
     execute: async ({ path, method, body, full }, tctx) => {
       const verb = method ?? "GET";
       if (body !== undefined) {
@@ -99,7 +100,7 @@ export function apiTool(ctx: MattermostContext) {
       // code), so the request is hand-rolled — but `getOptions` still builds the headers, so the
       // token and content type stay in one place.
       const response = await fetch(url, {
-        ...ctx.client.getOptions({ method: verb, body, signal: tctx.abort }),
+        ...ctx.client.getOptions({ method: verb, body, signal: tctx.signal }),
         // The path guard only covers the first hop. Following a 3xx would resend the request —
         // and, while it stays on this origin, the token — wherever the server points.
         redirect: "manual",

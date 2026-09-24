@@ -34,10 +34,17 @@ export interface MattermostContext {
   downloadDir?: string;
   /**
    * Absolute path from the `uploadRoot` plugin option: every `mattermost_create_post` attachment has
-   * to resolve inside it. Unset means the tool call's worktree, which is where opencode resolves the
-   * agent's own `read` permission — so the plugin ends up matching its host rather than exceeding it.
+   * to resolve inside it. Unset means `worktree`, which is where opencode resolves the agent's own
+   * `read` permission — so the plugin ends up matching its host rather than exceeding it.
    */
   uploadRoot?: string;
+  /** Where a relative attachment path starts: the session directory, or the CLI's cwd. */
+  directory: string;
+  /**
+   * The git worktree root the plugin was started in, or the CLI's cwd. opencode v2 no longer puts
+   * either path on the tool call, so both are fixed when the context is built.
+   */
+  worktree: string;
   me(): Promise<UserProfile>;
   team(): Promise<Team>;
   clientConfig(): Promise<ClientConfig>;
@@ -157,7 +164,12 @@ export function withTimeout<T>(promise: Promise<T>, ms: number, message: string)
 export function createMattermostContext(
   config: MattermostEnv,
   client: Client4 = createMattermostClient(config satisfies MattermostConfig),
-  options: { downloadDir?: string; uploadRoot?: string } = {},
+  options: {
+    downloadDir?: string;
+    uploadRoot?: string;
+    directory?: string;
+    worktree?: string;
+  } = {},
 ): MattermostContext {
   let mePromise: Promise<UserProfile> | undefined;
   let teamPromise: Promise<Team> | undefined;
@@ -320,6 +332,8 @@ export function createMattermostContext(
     config,
     downloadDir: options.downloadDir,
     uploadRoot: options.uploadRoot,
+    directory: options.directory ?? process.cwd(),
+    worktree: options.worktree ?? process.cwd(),
     me,
     team,
     clientConfig,

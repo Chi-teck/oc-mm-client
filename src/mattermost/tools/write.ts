@@ -1,10 +1,11 @@
 import { realpath } from "node:fs/promises";
 import { basename, resolve } from "node:path";
-import { tool } from "@opencode-ai/plugin";
+import { z } from "zod";
 import { contains } from "../../paths.js";
 import { humanSize, type MattermostContext, parseSchedule, unreadCount } from "../context.js";
 import { confirmWrite } from "./confirm.js";
 import { describeClientError } from "./registry.js";
+import { tool } from "./types.js";
 
 /** The server's `MaxFileSize`, or undefined when it cannot be read — then the check falls open. */
 async function maxFileSize(ctx: MattermostContext): Promise<number | undefined> {
@@ -106,19 +107,16 @@ export function createPostTool(ctx: MattermostContext) {
   return tool({
     description:
       "Post a message to a Mattermost channel, optionally as a thread reply (thread_root_id) with file attachments (paths relative to the working directory), now or scheduled for later (schedule_at).",
-    args: {
-      channel: tool.schema.string().describe("Channel name or 26-char id"),
-      message: tool.schema.string().describe("Message text (markdown supported)"),
-      thread_root_id: tool.schema.string().optional().describe("Root post id to reply in a thread"),
-      schedule_at: tool.schema
+    input: z.object({
+      channel: z.string().describe("Channel name or 26-char id"),
+      message: z.string().describe("Message text (markdown supported)"),
+      thread_root_id: z.string().optional().describe("Root post id to reply in a thread"),
+      schedule_at: z
         .string()
         .optional()
         .describe('Send later instead of now: "30m", "2h", "3d", ISO date, or epoch ms'),
-      attachments: tool.schema
-        .array(tool.schema.string())
-        .optional()
-        .describe("File paths to attach"),
-    },
+      attachments: z.array(z.string()).optional().describe("File paths to attach"),
+    }),
     execute: async (
       { channel, message, thread_root_id: rootId, schedule_at: scheduleAt, attachments },
       tctx,
@@ -134,13 +132,13 @@ export function createPostTool(ctx: MattermostContext) {
       // leave the files before it orphaned on the server; that it also saves a round trip on the
       // way out is a side effect. The root is `realpath`ed once here — a root that cannot be
       // resolved falls back to the path as written, which can only refuse more, never less.
-      const root = ctx.uploadRoot ?? tctx.worktree;
+      const root = ctx.uploadRoot ?? ctx.worktree;
       const files: Attachment[] = [];
       if (attachments?.length) {
         const real = await realpath(root).catch(() => resolve(root));
         // Sequential, so two bad attachments report in the order the caller wrote them.
         for (const attachment of attachments) {
-          files.push({ attachment, abs: await resolveUnder(real, tctx.directory, attachment) });
+          files.push({ attachment, abs: await resolveUnder(real, ctx.directory, attachment) });
         }
       }
       const resolved = await ctx.resolveChannel(channel);
@@ -191,11 +189,11 @@ export function reactTool(ctx: MattermostContext) {
   return tool({
     description:
       "Add or remove an emoji reaction on a Mattermost post (emoji name without colons, e.g. thumbsup).",
-    args: {
-      post_id: tool.schema.string().describe("Post id"),
-      emoji: tool.schema.string().describe("Emoji name without colons, e.g. thumbsup"),
-      action: tool.schema.enum(["add", "remove"]).describe("Add or remove the reaction"),
-    },
+    input: z.object({
+      post_id: z.string().describe("Post id"),
+      emoji: z.string().describe("Emoji name without colons, e.g. thumbsup"),
+      action: z.enum(["add", "remove"]).describe("Add or remove the reaction"),
+    }),
     execute: async ({ post_id: postId, emoji, action }, tctx) => {
       // Confirm first, check second. The existence check below is a read with the user's token,
       // so it must not run on a call the user is about to deny, and keeping it behind the gate
@@ -234,9 +232,9 @@ export function reactTool(ctx: MattermostContext) {
 export function followThreadTool(ctx: MattermostContext) {
   return tool({
     description: "Follow a Mattermost thread, so the bot stays subscribed to its replies.",
-    args: {
-      thread_root_id: tool.schema.string().describe("Root post id of the thread"),
-    },
+    input: z.object({
+      thread_root_id: z.string().describe("Root post id of the thread"),
+    }),
     execute: async ({ thread_root_id: rootId }) => {
       const [me, team] = await Promise.all([ctx.me(), ctx.team()]);
       await ctx.client.updateThreadFollowForUser(me.id, team.id, rootId, true);
@@ -252,9 +250,9 @@ export function unfollowThreadTool(ctx: MattermostContext) {
   return tool({
     description:
       "Stop following a Mattermost thread — the way out of a conversation the bot was pulled into.",
-    args: {
-      thread_root_id: tool.schema.string().describe("Root post id of the thread"),
-    },
+    input: z.object({
+      thread_root_id: z.string().describe("Root post id of the thread"),
+    }),
     execute: async ({ thread_root_id: rootId }) => {
       const [me, team] = await Promise.all([ctx.me(), ctx.team()]);
       // The server answers 200 whether or not the thread was followed, and no check runs first:
@@ -271,9 +269,9 @@ export function unfollowThreadTool(ctx: MattermostContext) {
 export function markReadTool(ctx: MattermostContext) {
   return tool({
     description: "Mark a Mattermost channel as read (clears its unread state).",
-    args: {
-      channel: tool.schema.string().describe("Channel name or 26-char id"),
-    },
+    input: z.object({
+      channel: z.string().describe("Channel name or 26-char id"),
+    }),
     execute: async ({ channel }) => {
       const resolved = await ctx.resolveChannel(channel);
       // Read the counters before clearing them — afterwards there is nothing left to count, and

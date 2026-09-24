@@ -7,8 +7,8 @@ import { createTools } from "./mattermost/tools/registry.js";
 
 const config: MattermostEnv = { url: "https://mm.example.com", token: "tok", team: "my-team" };
 const tools = createTools(createMattermostContext(config, {} as Client4));
-const readPostsArgs = tools.mattermost_read_posts?.args ?? {};
-const createPostArgs = tools.mattermost_create_post?.args ?? {};
+const readPostsArgs = tools.mattermost_read_posts?.input.shape ?? {};
+const createPostArgs = tools.mattermost_create_post?.input.shape ?? {};
 
 describe("parseArgv", () => {
   it("splits tool name from key=value pairs", () => {

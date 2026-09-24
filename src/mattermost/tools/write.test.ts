@@ -5,10 +5,9 @@ import { join, resolve } from "node:path";
 import { type Client4, ClientError } from "@mattermost/client";
 import type { ChannelMembership, ServerChannel } from "@mattermost/types/channels";
 import type { ClientConfig } from "@mattermost/types/config";
-import type { ToolContext } from "@opencode-ai/plugin";
-import { tool } from "@opencode-ai/plugin";
 import { createMattermostContext } from "../context.js";
 import type { MattermostEnv } from "../env.js";
+import type { MmToolContext } from "./types.js";
 import {
   createPostTool,
   followThreadTool,
@@ -34,7 +33,7 @@ const SCHEDULE_ISO = new Date(SCHEDULE_AT).toISOString();
 
 /**
  * A file that exists and is not in the worktree, which is what the default upload root is here:
- * `toolCtx` sets `worktree` to the process cwd. A path that merely does not exist would be reported
+ * `PATHS` sets `worktree` to the process cwd. A path that merely does not exist would be reported
  * as missing rather than as an escape, so the refusals below need a real one.
  */
 let outsideDir: string;
@@ -55,17 +54,12 @@ afterAll(async () => {
   await rm(outsideDir, { recursive: true, force: true });
 });
 
-const toolCtx = (onAsk?: (input: unknown) => Promise<void>) =>
-  ({
-    sessionID: "s",
-    messageID: "m",
-    agent: "a",
-    directory: "local/tmp",
-    worktree: process.cwd(),
-    abort: new AbortController().signal,
-    metadata: () => {},
-    ask: onAsk ?? (async () => {}),
-  }) as ToolContext;
+const PATHS = { directory: "local/tmp", worktree: process.cwd() };
+
+const toolCtx = (onAsk?: (input: unknown) => Promise<void>): MmToolContext => ({
+  signal: new AbortController().signal,
+  confirm: (permission, summary) => (onAsk ?? (async () => {}))({ permission, summary }),
+});
 
 function recordingCtx() {
   const asks: unknown[] = [];
@@ -194,7 +188,7 @@ function mockClient(state: Partial<MockState> = {}): Client4 & { state: MockStat
 describe("mattermost_create_post", () => {
   it("refuses a blank message with no attachments, before asking or calling the API", async () => {
     const client = mockClient();
-    const ctx = createMattermostContext(config, client);
+    const ctx = createMattermostContext(config, client, PATHS);
     const { asks, tctx } = recordingCtx();
     await expect(
       createPostTool(ctx).execute({ channel: "my-channel", message: "   " }, tctx),
@@ -206,7 +200,7 @@ describe("mattermost_create_post", () => {
   it("allows a blank message when attachments carry the post", async () => {
     await Bun.write("local/tmp/attach.txt", "hello attachment");
     const client = mockClient();
-    const ctx = createMattermostContext(config, client);
+    const ctx = createMattermostContext(config, client, PATHS);
     await createPostTool(ctx).execute(
       { channel: "my-channel", message: "", attachments: ["attach.txt"] },
       recordingCtx().tctx,
@@ -217,7 +211,7 @@ describe("mattermost_create_post", () => {
   it("uploads attachments before posting and wires file_ids", async () => {
     await Bun.write("local/tmp/attach.txt", "hello attachment");
     const client = mockClient();
-    const ctx = createMattermostContext(config, client);
+    const ctx = createMattermostContext(config, client, PATHS);
     const result = await createPostTool(ctx).execute(
       { channel: "my-channel", message: "with file", attachments: ["attach.txt"] },
       recordingCtx().tctx,
@@ -244,7 +238,7 @@ describe("mattermost_create_post", () => {
 
   it("posts without attachments and skips upload entirely", async () => {
     const client = mockClient();
-    const ctx = createMattermostContext(config, client);
+    const ctx = createMattermostContext(config, client, PATHS);
     await createPostTool(ctx).execute({ channel: "my-channel", message: "plain" }, toolCtx());
     expect(client.state.order).toEqual(["createPost"]);
     expect(client.state.createdPosts[0]).toEqual({ channel_id: CHANNEL_ID, message: "plain" });
@@ -252,7 +246,7 @@ describe("mattermost_create_post", () => {
 
   it("passes root_id through for thread replies", async () => {
     const client = mockClient();
-    const ctx = createMattermostContext(config, client);
+    const ctx = createMattermostContext(config, client, PATHS);
     await createPostTool(ctx).execute(
       { channel: "my-channel", message: "reply", thread_root_id: "rrrrrrrrrrrrrrrrrrrrrrrrrr" },
       recordingCtx().tctx,
@@ -266,7 +260,7 @@ describe("mattermost_create_post", () => {
 
   it("schedules instead of posting when schedule_at is set", async () => {
     const client = mockClient();
-    const ctx = createMattermostContext(config, client);
+    const ctx = createMattermostContext(config, client, PATHS);
     const { asks, tctx } = recordingCtx();
     const result = await createPostTool(ctx).execute(
       { channel: "my-channel", message: "later", schedule_at: SCHEDULE_ISO },
@@ -284,7 +278,7 @@ describe("mattermost_create_post", () => {
     // fail on every other developer's box, while a bare `toLocaleString` here would let the zone
     // be dropped again without a test noticing.
     expect(local).not.toBe(new Date(SCHEDULE_AT).toLocaleString());
-    expect((asks[0] as { patterns: string[] }).patterns[0]).toContain(`[send at ${local}]`);
+    expect((asks[0] as { summary: string }).summary).toContain(`[send at ${local}]`);
     const output = typeof result === "string" ? result : result.output;
     expect(output).toBe(
       `Scheduled for ${local} in my-channel (scheduled post id: ${SCHEDULED_ID})`,
@@ -293,7 +287,7 @@ describe("mattermost_create_post", () => {
 
   it("keeps root_id when a thread reply is scheduled", async () => {
     const client = mockClient();
-    const ctx = createMattermostContext(config, client);
+    const ctx = createMattermostContext(config, client, PATHS);
     await createPostTool(ctx).execute(
       {
         channel: "my-channel",
@@ -314,7 +308,7 @@ describe("mattermost_create_post", () => {
   it("uploads attachments for a scheduled post too", async () => {
     await Bun.write("local/tmp/attach.txt", "hello attachment");
     const client = mockClient();
-    const ctx = createMattermostContext(config, client);
+    const ctx = createMattermostContext(config, client, PATHS);
     const result = await createPostTool(ctx).execute(
       {
         channel: "my-channel",
@@ -338,7 +332,7 @@ describe("mattermost_create_post", () => {
   it("refuses a past schedule_at before asking or uploading", async () => {
     await Bun.write("local/tmp/attach.txt", "hello attachment");
     const client = mockClient();
-    const ctx = createMattermostContext(config, client);
+    const ctx = createMattermostContext(config, client, PATHS);
     const { asks, tctx } = recordingCtx();
     await expect(
       createPostTool(ctx).execute(
@@ -357,7 +351,7 @@ describe("mattermost_create_post", () => {
 
   it("throws on missing attachment file", async () => {
     const client = mockClient();
-    const ctx = createMattermostContext(config, client);
+    const ctx = createMattermostContext(config, client, PATHS);
     await expect(
       createPostTool(ctx).execute(
         { channel: "my-channel", message: "x", attachments: ["nope.txt"] },
@@ -370,7 +364,7 @@ describe("mattermost_create_post", () => {
   it("uploads nothing when a later attachment is missing", async () => {
     await Bun.write("local/tmp/attach.txt", "hello attachment");
     const client = mockClient();
-    const ctx = createMattermostContext(config, client);
+    const ctx = createMattermostContext(config, client, PATHS);
     await expect(
       createPostTool(ctx).execute(
         { channel: "my-channel", message: "x", attachments: ["attach.txt", "nope.txt"] },
@@ -382,7 +376,7 @@ describe("mattermost_create_post", () => {
 
   it("refuses an attachment outside the root, before asking or uploading", async () => {
     const client = mockClient();
-    const ctx = createMattermostContext(config, client);
+    const ctx = createMattermostContext(config, client, PATHS);
     const { asks, tctx } = recordingCtx();
     await expect(
       createPostTool(ctx).execute(
@@ -404,7 +398,7 @@ describe("mattermost_create_post", () => {
     await rm(link, { force: true });
     await symlink(outside, link);
     const client = mockClient();
-    const ctx = createMattermostContext(config, client);
+    const ctx = createMattermostContext(config, client, PATHS);
     const { asks, tctx } = recordingCtx();
     try {
       await expect(
@@ -422,7 +416,10 @@ describe("mattermost_create_post", () => {
 
   it("refuses the root itself, which was never a file", async () => {
     const client = mockClient();
-    const ctx = createMattermostContext(config, client, { uploadRoot: resolve("local/tmp") });
+    const ctx = createMattermostContext(config, client, {
+      ...PATHS,
+      uploadRoot: resolve("local/tmp"),
+    });
     const { asks, tctx } = recordingCtx();
     await expect(
       createPostTool(ctx).execute(
@@ -438,7 +435,7 @@ describe("mattermost_create_post", () => {
     // "outside the root" about a typo sends the reader to the config instead of to the filename.
     const gone = join(outsideDir, "gone.txt");
     const client = mockClient();
-    const ctx = createMattermostContext(config, client);
+    const ctx = createMattermostContext(config, client, PATHS);
     await expect(
       createPostTool(ctx).execute(
         { channel: "my-channel", message: "x", attachments: [gone] },
@@ -452,21 +449,21 @@ describe("mattermost_create_post", () => {
     const client = mockClient();
     // Two anchors, not one: the root is `local`, the tool call's directory is `local/tmp`, and
     // `attach.txt` means the file in the latter — re-anchoring it on the root would move it.
-    const ctx = createMattermostContext(config, client, { uploadRoot: resolve("local") });
+    const ctx = createMattermostContext(config, client, { ...PATHS, uploadRoot: resolve("local") });
     const { asks, tctx } = recordingCtx();
     await createPostTool(ctx).execute(
       { channel: "my-channel", message: "with file", attachments: ["attach.txt"] },
       tctx,
     );
-    const ask = asks[0] as { patterns: string[] };
-    expect(ask.patterns[0]).toContain(`[files: ${resolve("local/tmp", "attach.txt")}]`);
+    const ask = asks[0] as { summary: string };
+    expect(ask.summary).toContain(`[files: ${resolve("local/tmp", "attach.txt")}]`);
     expect(client.state.order).toContain("uploadFile");
   });
 
   it("uploads nothing when a later attachment is outside the root", async () => {
     await Bun.write("local/tmp/attach.txt", "hello attachment");
     const client = mockClient();
-    const ctx = createMattermostContext(config, client);
+    const ctx = createMattermostContext(config, client, PATHS);
     const { asks, tctx } = recordingCtx();
     await expect(
       createPostTool(ctx).execute(
@@ -481,7 +478,7 @@ describe("mattermost_create_post", () => {
   it("refuses an attachment over the server's MaxFileSize before uploading anything", async () => {
     await Bun.write("local/tmp/attach.txt", "hello attachment");
     const client = mockClient({ clientConfig: { MaxFileSize: "8" } });
-    const ctx = createMattermostContext(config, client);
+    const ctx = createMattermostContext(config, client, PATHS);
     await expect(
       createPostTool(ctx).execute(
         { channel: "my-channel", message: "x", attachments: ["attach.txt"] },
@@ -494,7 +491,7 @@ describe("mattermost_create_post", () => {
   it("uploads anyway when the server config cannot be read", async () => {
     await Bun.write("local/tmp/attach.txt", "hello attachment");
     const client = mockClient({ clientConfig: undefined });
-    const ctx = createMattermostContext(config, client);
+    const ctx = createMattermostContext(config, client, PATHS);
     await createPostTool(ctx).execute(
       { channel: "my-channel", message: "x", attachments: ["attach.txt"] },
       recordingCtx().tctx,
@@ -513,7 +510,7 @@ describe("mattermost_create_post", () => {
         status_code: 413,
       }),
     });
-    const ctx = createMattermostContext(config, client);
+    const ctx = createMattermostContext(config, client, PATHS);
     await expect(
       createPostTool(ctx).execute(
         { channel: "my-channel", message: "x", attachments: ["attach.txt", "attach2.txt"] },
@@ -529,7 +526,7 @@ describe("mattermost_create_post", () => {
     await Bun.write("local/tmp/attach.txt", "hello attachment");
     const failure = new Error("network reset");
     const client = mockClient({ failUploadAt: 0, uploadError: failure });
-    const ctx = createMattermostContext(config, client);
+    const ctx = createMattermostContext(config, client, PATHS);
     await expect(
       createPostTool(ctx).execute(
         { channel: "my-channel", message: "x", attachments: ["attach.txt"] },
@@ -541,7 +538,7 @@ describe("mattermost_create_post", () => {
   it("fetches the server config once across posts", async () => {
     await Bun.write("local/tmp/attach.txt", "hello attachment");
     const client = mockClient();
-    const ctx = createMattermostContext(config, client);
+    const ctx = createMattermostContext(config, client, PATHS);
     const post = createPostTool(ctx);
     const args = { channel: "my-channel", message: "twice", attachments: ["attach.txt"] };
     await post.execute(args, recordingCtx().tctx);
@@ -552,9 +549,8 @@ describe("mattermost_create_post", () => {
 
   it("requires a message (zod)", () => {
     const client = mockClient();
-    const ctx = createMattermostContext(config, client);
-    const args = createPostTool(ctx).args;
-    const parsed = tool.schema.object(args).safeParse({ channel: "my-channel" });
+    const ctx = createMattermostContext(config, client, PATHS);
+    const parsed = createPostTool(ctx).input.safeParse({ channel: "my-channel" });
     expect(parsed.success).toBe(false);
   });
 });
@@ -562,7 +558,7 @@ describe("mattermost_create_post", () => {
 describe("mattermost_react", () => {
   it("routes add to addReaction with own user id", async () => {
     const client = mockClient();
-    const ctx = createMattermostContext(config, client);
+    const ctx = createMattermostContext(config, client, PATHS);
     const result = await reactTool(ctx).execute(
       { post_id: "ppppppppppppppppppppppppp1", emoji: "thumbsup", action: "add" },
       recordingCtx().tctx,
@@ -577,7 +573,7 @@ describe("mattermost_react", () => {
 
   it("routes remove to removeReaction", async () => {
     const client = mockClient();
-    const ctx = createMattermostContext(config, client);
+    const ctx = createMattermostContext(config, client, PATHS);
     await reactTool(ctx).execute(
       { post_id: "ppppppppppppppppppppppppp1", emoji: "eyes", action: "remove" },
       recordingCtx().tctx,
@@ -591,7 +587,7 @@ describe("mattermost_react", () => {
 
   it("asks first, then reports nothing to remove instead of a false success", async () => {
     const client = mockClient();
-    const ctx = createMattermostContext(config, client);
+    const ctx = createMattermostContext(config, client, PATHS);
     const { asks, tctx } = recordingCtx();
     const result = await reactTool(ctx).execute(
       { post_id: "ppppppppppppppppppppppppp1", emoji: "heart", action: "remove" },
@@ -608,7 +604,7 @@ describe("mattermost_react", () => {
 
   it("does not remove another user's reaction of the same emoji", async () => {
     const client = mockClient({ reactions: [{ user_id: "someone-else", emoji_name: "eyes" }] });
-    const ctx = createMattermostContext(config, client);
+    const ctx = createMattermostContext(config, client, PATHS);
     const { asks, tctx } = recordingCtx();
     await reactTool(ctx).execute(
       { post_id: "ppppppppppppppppppppppppp1", emoji: "eyes", action: "remove" },
@@ -622,7 +618,7 @@ describe("mattermost_react", () => {
 describe("mattermost_follow_thread", () => {
   it("follows with the bot's own id and the configured team", async () => {
     const client = mockClient();
-    const ctx = createMattermostContext(config, client);
+    const ctx = createMattermostContext(config, client, PATHS);
     const result = await followThreadTool(ctx).execute({ thread_root_id: ROOT_ID }, toolCtx());
     // The team is the assertion that matters: it comes from config, never from the post.
     expect(client.state.order).toEqual([
@@ -635,7 +631,7 @@ describe("mattermost_follow_thread", () => {
 
   it("unfollows with state false", async () => {
     const client = mockClient();
-    const ctx = createMattermostContext(config, client);
+    const ctx = createMattermostContext(config, client, PATHS);
     const result = await unfollowThreadTool(ctx).execute({ thread_root_id: ROOT_ID }, toolCtx());
     expect(client.state.order).toEqual([
       "updateThreadFollowForUser",
@@ -650,7 +646,7 @@ describe("mattermost_follow_thread", () => {
     // exit gesture has to work in a host that auto-rejects prompts. This test fails the moment a
     // `confirmWrite` is added to either tool.
     const client = mockClient();
-    const ctx = createMattermostContext(config, client);
+    const ctx = createMattermostContext(config, client, PATHS);
     await followThreadTool(ctx).execute({ thread_root_id: ROOT_ID }, rejectingCtx());
     await unfollowThreadTool(ctx).execute({ thread_root_id: ROOT_ID }, rejectingCtx());
     expect(client.state.order).toEqual([
@@ -663,9 +659,9 @@ describe("mattermost_follow_thread", () => {
 
   it("requires a thread_root_id (zod)", () => {
     const client = mockClient();
-    const ctx = createMattermostContext(config, client);
-    for (const args of [followThreadTool(ctx).args, unfollowThreadTool(ctx).args]) {
-      expect(tool.schema.object(args).safeParse({}).success).toBe(false);
+    const ctx = createMattermostContext(config, client, PATHS);
+    for (const input of [followThreadTool(ctx).input, unfollowThreadTool(ctx).input]) {
+      expect(input.safeParse({}).success).toBe(false);
     }
   });
 });
@@ -673,33 +669,33 @@ describe("mattermost_follow_thread", () => {
 describe("permission gating (ctx.ask)", () => {
   it("create_post asks with permission name and summary before any API write", async () => {
     const client = mockClient();
-    const ctx = createMattermostContext(config, client);
+    const ctx = createMattermostContext(config, client, PATHS);
     const { asks, tctx } = recordingCtx();
     await createPostTool(ctx).execute({ channel: "my-channel", message: "gated" }, tctx);
     expect(asks).toHaveLength(1);
-    const ask = asks[0] as { permission: string; patterns: string[] };
+    const ask = asks[0] as { permission: string; summary: string };
     expect(ask.permission).toBe("mattermost_create_post");
-    expect(ask.patterns[0]).toContain("my-channel");
-    expect(ask.patterns[0]).toContain("gated");
+    expect(ask.summary).toContain("my-channel");
+    expect(ask.summary).toContain("gated");
     expect(client.state.order).toContain("createPost");
   });
 
   it("create_post names the resolved attachment paths in the summary", async () => {
     await Bun.write("local/tmp/attach.txt", "hello attachment");
     const client = mockClient();
-    const ctx = createMattermostContext(config, client);
+    const ctx = createMattermostContext(config, client, PATHS);
     const { asks, tctx } = recordingCtx();
     await createPostTool(ctx).execute(
       { channel: "my-channel", message: "with file", attachments: ["attach.txt"] },
       tctx,
     );
-    const ask = asks[0] as { patterns: string[] };
-    expect(ask.patterns[0]).toContain(`[files: ${resolve("local/tmp", "attach.txt")}]`);
+    const ask = asks[0] as { summary: string };
+    expect(ask.summary).toContain(`[files: ${resolve("local/tmp", "attach.txt")}]`);
   });
 
   it("create_post performs no API calls when the ask is rejected", async () => {
     const client = mockClient();
-    const ctx = createMattermostContext(config, client);
+    const ctx = createMattermostContext(config, client, PATHS);
     await expect(
       createPostTool(ctx).execute({ channel: "my-channel", message: "nope" }, rejectingCtx()),
     ).rejects.toThrow("rejected permission");
@@ -708,7 +704,7 @@ describe("permission gating (ctx.ask)", () => {
 
   it("react performs no API calls when the ask is rejected, including on remove", async () => {
     const client = mockClient();
-    const ctx = createMattermostContext(config, client);
+    const ctx = createMattermostContext(config, client, PATHS);
     await expect(
       reactTool(ctx).execute(
         { post_id: "ppppppppppppppppppppppppp1", emoji: "heart", action: "remove" },
@@ -720,7 +716,7 @@ describe("permission gating (ctx.ask)", () => {
 
   it("react asks; mark_read never asks", async () => {
     const client = mockClient();
-    const ctx = createMattermostContext(config, client);
+    const ctx = createMattermostContext(config, client, PATHS);
     const { asks, tctx } = recordingCtx();
     await reactTool(ctx).execute(
       { post_id: "ppppppppppppppppppppppppp1", emoji: "eyes", action: "add" },
@@ -737,7 +733,7 @@ describe("permission gating (ctx.ask)", () => {
 describe("mattermost_mark_read", () => {
   it("marks the resolved channel viewed and reports what it cleared", async () => {
     const client = mockClient();
-    const ctx = createMattermostContext(config, client);
+    const ctx = createMattermostContext(config, client, PATHS);
     const result = await markReadTool(ctx).execute({ channel: "my-channel" }, toolCtx());
     expect(client.state.order).toEqual([
       "getChannel",
@@ -758,7 +754,7 @@ describe("mattermost_mark_read", () => {
         last_viewed_at: 1,
       } as ChannelMembership,
     });
-    const ctx = createMattermostContext(config, client);
+    const ctx = createMattermostContext(config, client, PATHS);
     const result = await markReadTool(ctx).execute({ channel: "my-channel" }, toolCtx());
     const output = typeof result === "string" ? result : result.output;
     expect(output).toBe("Marked my-channel read: 1 unread, 1 mention cleared.");
@@ -773,7 +769,7 @@ describe("mattermost_mark_read", () => {
         last_viewed_at: 1,
       } as ChannelMembership,
     });
-    const ctx = createMattermostContext(config, client);
+    const ctx = createMattermostContext(config, client, PATHS);
     const result = await markReadTool(ctx).execute({ channel: "my-channel" }, toolCtx());
     expect(client.state.order).toEqual(["getChannel", "getChannelMember"]);
     const output = typeof result === "string" ? result : result.output;

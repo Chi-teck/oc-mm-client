@@ -1,7 +1,8 @@
 import { mkdir, open } from "node:fs/promises";
 import { basename, extname, join, resolve } from "node:path";
-import { tool } from "@opencode-ai/plugin";
+import { z } from "zod";
 import { humanSize, type MattermostContext, truncate } from "../context.js";
+import { tool } from "./types.js";
 
 // The server caps uploads at `MaxFileSize` = 268435456 (`GET /api/v4/config/client?format=old`), so
 // no legitimate attachment can exceed this and the ceiling can never refuse a real file.
@@ -79,10 +80,10 @@ export function getFileTool(ctx: MattermostContext) {
   const where = ctx.downloadDir ?? `<worktree>/${DEFAULT_DIR}/`;
   return tool({
     description: `Download a Mattermost file attachment by id into ${where} and return the saved path.`,
-    args: {
-      file_id: tool.schema.string().describe("26-char file id"),
-      name: tool.schema.string().optional().describe("Preferred file name"),
-    },
+    input: z.object({
+      file_id: z.string().describe("26-char file id"),
+      name: z.string().optional().describe("Preferred file name"),
+    }),
     execute: async ({ file_id: fileId, name }, tctx) => {
       // Client4 only builds the URL for downloads — `doFetch` decodes the body by `Content-Type`
       // and would run `.text()` over a binary attachment — so the request is hand-rolled. It still
@@ -90,7 +91,7 @@ export function getFileTool(ctx: MattermostContext) {
       // place. The timestamp is the cache buster Mattermost appends to the query.
       const url = ctx.client.getFileUrl(fileId, Date.now());
       const response = await fetch(url, {
-        ...ctx.client.getOptions({ signal: tctx.abort }),
+        ...ctx.client.getOptions({ signal: tctx.signal }),
         // Following a 3xx would resend the request — and the token — wherever the server points.
         redirect: "manual",
       });
@@ -121,7 +122,7 @@ export function getFileTool(ctx: MattermostContext) {
       // Matches both `filename="x"` and the RFC 5987 `filename*=UTF-8''x` form.
       const fromHeader = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(disposition)?.[1];
       const preferred = (name ?? fromHeader ?? `${fileId}.bin`).replace(/[/\\]/g, "_");
-      const dir = ctx.downloadDir ?? resolve(tctx.worktree, DEFAULT_DIR);
+      const dir = ctx.downloadDir ?? resolve(ctx.worktree, DEFAULT_DIR);
       let target: string;
       try {
         await ensureDir(dir);

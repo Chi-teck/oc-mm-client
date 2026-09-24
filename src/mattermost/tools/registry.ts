@@ -1,11 +1,11 @@
 import { ClientError } from "@mattermost/client";
-import type { ToolDefinition } from "@opencode-ai/plugin";
 import type { MattermostContext } from "../context.js";
 import { apiTool } from "./api.js";
 import { listChannelsTool } from "./channels.js";
 import { getFileTool } from "./files.js";
 import { dmTool, editPostTool, listMembersTool, searchTool } from "./misc.js";
 import { getPostTool, readPostsTool, readUnreadTool } from "./read.js";
+import type { MmTool } from "./types.js";
 import {
   createPostTool,
   followThreadTool,
@@ -27,7 +27,7 @@ export function describeClientError(error: unknown): unknown {
   return new Error(`Mattermost API${status}${endpoint}: ${message}`, { cause: error });
 }
 
-function withReadableErrors(definition: ToolDefinition): ToolDefinition {
+function withReadableErrors(definition: MmTool): MmTool {
   return {
     ...definition,
     execute: async (args, tctx) => {
@@ -40,8 +40,8 @@ function withReadableErrors(definition: ToolDefinition): ToolDefinition {
   };
 }
 
-export function createTools(ctx: MattermostContext): Record<string, ToolDefinition> {
-  const tools: Record<string, ToolDefinition> = {
+export function createTools(ctx: MattermostContext): Record<string, MmTool> {
+  const tools: Record<string, MmTool> = {
     mattermost_list_channels: listChannelsTool(ctx),
     mattermost_read_posts: readPostsTool(ctx),
     mattermost_get_post: getPostTool(ctx),

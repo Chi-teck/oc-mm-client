@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import type { ToolContext } from "@opencode-ai/plugin";
 import { createMattermostContext } from "../context.js";
 import type { MattermostEnv } from "../env.js";
 import { apiTool } from "./api.js";
+import type { MmToolContext } from "./types.js";
 
 const config: MattermostEnv = { url: "https://mm.example.com", token: "tok", team: "my-team" };
 const ME_ID = "uuuuuuuuuuuuuuuuuuuuuuuuu1";
@@ -14,17 +14,10 @@ afterEach(() => {
   globalThis.fetch = originalFetch;
 });
 
-const toolCtx = (onAsk?: (input: unknown) => Promise<void>) =>
-  ({
-    sessionID: "s",
-    messageID: "m",
-    agent: "a",
-    directory: "local/tmp",
-    worktree: process.cwd(),
-    abort: new AbortController().signal,
-    metadata: () => {},
-    ask: onAsk ?? (async () => {}),
-  }) as ToolContext;
+const toolCtx = (onAsk?: (input: unknown) => Promise<void>): MmToolContext => ({
+  signal: new AbortController().signal,
+  confirm: (permission, summary) => (onAsk ?? (async () => {}))({ permission, summary }),
+});
 
 function recordingCtx() {
   const asks: unknown[] = [];
@@ -128,14 +121,7 @@ describe("mattermost_api", () => {
     await api({ path: "/posts", method: "POST", body: '{"message":"hi"}' }, tctx);
 
     const summary = 'mattermost_api POST /posts: {"message":"hi"}';
-    expect(asks).toEqual([
-      {
-        permission: "mattermost_api",
-        patterns: [summary],
-        always: [],
-        metadata: { summary },
-      },
-    ]);
+    expect(asks).toEqual([{ permission: "mattermost_api", summary }]);
     expect(calls[0]?.method).toBe("POST");
     expect(calls[0]?.body).toBe('{"message":"hi"}');
     expect(calls[0]?.headers["content-type"]).toBe("application/json");
@@ -148,7 +134,7 @@ describe("mattermost_api", () => {
 
     await api({ path: "/posts", method: "POST", body: JSON.stringify({ message }) }, tctx);
 
-    const summary = (asks[0] as { metadata: { summary: string } }).metadata.summary;
+    const summary = (asks[0] as { summary: string }).summary;
     expect(summary.startsWith('mattermost_api POST /posts: {"message":"xxx')).toBe(true);
     expect(summary).toHaveLength("mattermost_api POST /posts: ".length + 200);
   });

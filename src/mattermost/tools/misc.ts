@@ -2,9 +2,10 @@ import { ClientError } from "@mattermost/client";
 import type { FileSearchResultItem } from "@mattermost/types/files";
 import type { Post } from "@mattermost/types/posts";
 import type { UserProfile } from "@mattermost/types/users";
-import { tool } from "@opencode-ai/plugin";
+import { z } from "zod";
 import { humanSize, type MattermostContext, relTime, truncate } from "../context.js";
 import { confirmWrite } from "./confirm.js";
+import { tool } from "./types.js";
 
 const MAX_HITS = 30;
 const PROFILE_PAGE = 200;
@@ -85,11 +86,11 @@ async function describePost(ctx: MattermostContext, postId: string): Promise<str
 export function editPostTool(ctx: MattermostContext) {
   return tool({
     description: "Edit or delete one of the bot's own Mattermost posts.",
-    args: {
-      post_id: tool.schema.string().describe("Post id"),
-      action: tool.schema.enum(["edit", "delete"]).describe("Edit (needs message) or delete"),
-      message: tool.schema.string().optional().describe("New message text (required for edit)"),
-    },
+    input: z.object({
+      post_id: z.string().describe("Post id"),
+      action: z.enum(["edit", "delete"]).describe("Edit (needs message) or delete"),
+      message: z.string().optional().describe("New message text (required for edit)"),
+    }),
     execute: async ({ post_id: postId, action, message }, tctx) => {
       if (action === "edit") {
         // Check before asking, the way create_post does (write.ts:48-50): a call that cannot run
@@ -132,10 +133,10 @@ export function searchTool(ctx: MattermostContext) {
   return tool({
     description:
       'Search Mattermost posts or files across the team by keyword (type: "posts" or "files").',
-    args: {
-      query: tool.schema.string().describe("Search terms"),
-      type: tool.schema.enum(["posts", "files"]).describe("Search posts or files"),
-    },
+    input: z.object({
+      query: z.string().describe("Search terms"),
+      type: z.enum(["posts", "files"]).describe("Search posts or files"),
+    }),
     execute: async ({ query, type }) => {
       const team = await ctx.team();
       if (type === "files") {
@@ -190,10 +191,10 @@ export function listMembersTool(ctx: MattermostContext) {
   return tool({
     description:
       "List members of a Mattermost channel; with query, fuzzy-match usernames (out-of-channel matches are marked).",
-    args: {
-      channel: tool.schema.string().describe("Channel name or 26-char id"),
-      query: tool.schema.string().optional().describe("Fuzzy username/name filter"),
-    },
+    input: z.object({
+      channel: z.string().describe("Channel name or 26-char id"),
+      query: z.string().optional().describe("Fuzzy username/name filter"),
+    }),
     execute: async ({ channel, query }) => {
       const resolved = await ctx.resolveChannel(channel);
       if (query === undefined) {
@@ -227,9 +228,9 @@ export function dmTool(ctx: MattermostContext) {
   return tool({
     description:
       "Open (or reuse) a direct-message channel with a user by username and return its channel name.",
-    args: {
-      username: tool.schema.string().describe("Username without @"),
-    },
+    input: z.object({
+      username: z.string().describe("Username without @"),
+    }),
     execute: async ({ username }, tctx) => {
       await confirmWrite(tctx, "mattermost_dm", `mattermost_dm @${username}`);
       const user = await ctx.client.getUserByUsername(username);

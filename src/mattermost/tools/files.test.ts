@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { join, resolve } from "node:path";
-import type { ToolContext } from "@opencode-ai/plugin";
 import { createMattermostContext } from "../context.js";
 import type { MattermostEnv } from "../env.js";
 import { getFileTool } from "./files.js";
+import type { MmToolContext } from "./types.js";
 
 const config: MattermostEnv = { url: "https://mm.example.com", token: "tok", team: "my-team" };
 const FILE_ID = "ffffffffffffffffffffffff01";
@@ -14,17 +14,10 @@ afterEach(() => {
   globalThis.fetch = originalFetch;
 });
 
-const toolCtx = (worktree: string) =>
-  ({
-    sessionID: "s",
-    messageID: "m",
-    agent: "a",
-    directory: worktree,
-    worktree,
-    abort: new AbortController().signal,
-    metadata: () => {},
-    ask: async () => {},
-  }) as ToolContext;
+const toolCtx = (): MmToolContext => ({
+  signal: new AbortController().signal,
+  confirm: async () => {},
+});
 
 interface Call {
   url: string;
@@ -60,14 +53,14 @@ describe("mattermost_get_file", () => {
           headers: { "Content-Disposition": 'attachment; filename="report.csv"' },
         }),
     );
-    const ctx = createMattermostContext(config);
-    const tctx = toolCtx(SCRATCH);
+    const ctx = createMattermostContext(config, undefined, { worktree: SCRATCH });
+    const tctx = toolCtx();
     const result = await getFileTool(ctx).execute({ file_id: FILE_ID }, tctx);
     expect(calls[0]?.url).toContain(`/api/v4/files/${FILE_ID}?`);
     expect(calls[0]?.headers.authorization?.toLowerCase()).toBe("bearer tok");
     expect(calls[0]?.headers["accept-language"]).toBe("en");
     expect(calls[0]?.redirect).toBe("manual");
-    expect(calls[0]?.signal).toBe(tctx.abort);
+    expect(calls[0]?.signal).toBe(tctx.signal);
     const output = typeof result === "string" ? result : result.output;
     expect(output).toContain("report.csv");
     expect(output).toContain(FILE_ID);
@@ -83,10 +76,10 @@ describe("mattermost_get_file", () => {
           headers: { "Content-Disposition": 'attachment; filename="wrong.txt"' },
         }),
     );
-    const ctx = createMattermostContext(config);
+    const ctx = createMattermostContext(config, undefined, { worktree: SCRATCH });
     const result = await getFileTool(ctx).execute(
       { file_id: FILE_ID, name: "right.txt" },
-      toolCtx(SCRATCH),
+      toolCtx(),
     );
     const output = typeof result === "string" ? result : result.output;
     expect(output).toContain("right.txt");
@@ -97,8 +90,8 @@ describe("mattermost_get_file", () => {
   it("falls back to <id>.bin when no name and no header", async () => {
     await cleanScratch();
     mockFetch(() => new Response("data"));
-    const ctx = createMattermostContext(config);
-    const result = await getFileTool(ctx).execute({ file_id: FILE_ID }, toolCtx(SCRATCH));
+    const ctx = createMattermostContext(config, undefined, { worktree: SCRATCH });
+    const result = await getFileTool(ctx).execute({ file_id: FILE_ID }, toolCtx());
     const output = typeof result === "string" ? result : result.output;
     expect(output).toContain(`${FILE_ID}.bin`);
     expect(await Bun.file(`${SCRATCH}/.opencode/mm-files/${FILE_ID}.bin`).text()).toBe("data");
@@ -108,16 +101,16 @@ describe("mattermost_get_file", () => {
   it("suffixes -1, -2 on collision", async () => {
     await cleanScratch();
     mockFetch(() => new Response("more"));
-    const ctx = createMattermostContext(config);
+    const ctx = createMattermostContext(config, undefined, { worktree: SCRATCH });
     const worktree = SCRATCH;
     await Bun.write(`${worktree}/.opencode/mm-files/notes.txt`, "old");
     const first = await getFileTool(ctx).execute(
       { file_id: FILE_ID, name: "notes.txt" },
-      toolCtx(worktree),
+      toolCtx(),
     );
     const second = await getFileTool(ctx).execute(
       { file_id: FILE_ID, name: "notes.txt" },
-      toolCtx(worktree),
+      toolCtx(),
     );
     const out1 = typeof first === "string" ? first : first.output;
     const out2 = typeof second === "string" ? second : second.output;
@@ -131,10 +124,9 @@ describe("mattermost_get_file", () => {
   it("names the unwritable worktree instead of relocating the download", async () => {
     await cleanScratch();
     mockFetch(() => new Response("data"));
-    const ctx = createMattermostContext(config);
-    const tctx = { ...toolCtx(SCRATCH), worktree: "/proc/nonexistent" } as ToolContext;
+    const ctx = createMattermostContext(config, undefined, { worktree: "/proc/nonexistent" });
     await expect(
-      getFileTool(ctx).execute({ file_id: FILE_ID, name: "saved.txt" }, tctx),
+      getFileTool(ctx).execute({ file_id: FILE_ID, name: "saved.txt" }, toolCtx()),
     ).rejects.toThrow(
       /^Download directory \/proc\/nonexistent\/\.opencode\/mm-files could not be created \(E[A-Z]+\)$/,
     );
@@ -143,8 +135,8 @@ describe("mattermost_get_file", () => {
 
   it("throws on non-ok response and quotes the server's message", async () => {
     mockFetch(() => new Response('{"message":"Unable to get the file."}', { status: 404 }));
-    const ctx = createMattermostContext(config);
-    await expect(getFileTool(ctx).execute({ file_id: FILE_ID }, toolCtx(SCRATCH))).rejects.toThrow(
+    const ctx = createMattermostContext(config, undefined, { worktree: SCRATCH });
+    await expect(getFileTool(ctx).execute({ file_id: FILE_ID }, toolCtx())).rejects.toThrow(
       'File download failed (404): ffffffffffffffffffffffff01 — {"message":"Unable to get the file."}',
     );
     await cleanScratch();
@@ -155,8 +147,8 @@ describe("mattermost_get_file", () => {
     mockFetch(
       () => new Response(null, { status: 302, headers: { Location: "https://evil.example/x" } }),
     );
-    const ctx = createMattermostContext(config);
-    await expect(getFileTool(ctx).execute({ file_id: FILE_ID }, toolCtx(SCRATCH))).rejects.toThrow(
+    const ctx = createMattermostContext(config, undefined, { worktree: SCRATCH });
+    await expect(getFileTool(ctx).execute({ file_id: FILE_ID }, toolCtx())).rejects.toThrow(
       "redirected to https://evil.example/x; refusing to follow it",
     );
     expect(await Bun.file(`${SCRATCH}/.opencode/mm-files/${FILE_ID}.bin`).exists()).toBe(false);
@@ -168,8 +160,8 @@ describe("mattermost_get_file", () => {
     mockFetch(
       () => new Response("data", { headers: { "Content-Length": String(256 * 1024 * 1024 + 1) } }),
     );
-    const ctx = createMattermostContext(config);
-    await expect(getFileTool(ctx).execute({ file_id: FILE_ID }, toolCtx(SCRATCH))).rejects.toThrow(
+    const ctx = createMattermostContext(config, undefined, { worktree: SCRATCH });
+    await expect(getFileTool(ctx).execute({ file_id: FILE_ID }, toolCtx())).rejects.toThrow(
       "over the 256.0 MB limit",
     );
     expect(await Bun.file(`${SCRATCH}/.opencode/mm-files/${FILE_ID}.bin`).exists()).toBe(false);
@@ -181,8 +173,8 @@ describe("mattermost_get_file", () => {
     mockFetch(
       () => new Response("data", { headers: { "Content-Length": String(256 * 1024 * 1024) } }),
     );
-    const ctx = createMattermostContext(config);
-    await getFileTool(ctx).execute({ file_id: FILE_ID }, toolCtx(SCRATCH));
+    const ctx = createMattermostContext(config, undefined, { worktree: SCRATCH });
+    await getFileTool(ctx).execute({ file_id: FILE_ID }, toolCtx());
     expect(await Bun.file(`${SCRATCH}/.opencode/mm-files/${FILE_ID}.bin`).text()).toBe("data");
     await cleanScratch();
   });
@@ -190,8 +182,8 @@ describe("mattermost_get_file", () => {
   it("proceeds when Content-Length is missing", async () => {
     await cleanScratch();
     const calls = mockFetch(() => new Response("data"));
-    const ctx = createMattermostContext(config);
-    await getFileTool(ctx).execute({ file_id: FILE_ID }, toolCtx(SCRATCH));
+    const ctx = createMattermostContext(config, undefined, { worktree: SCRATCH });
+    await getFileTool(ctx).execute({ file_id: FILE_ID }, toolCtx());
     expect(calls).toHaveLength(1);
     expect(await Bun.file(`${SCRATCH}/.opencode/mm-files/${FILE_ID}.bin`).text()).toBe("data");
     await cleanScratch();
@@ -200,10 +192,10 @@ describe("mattermost_get_file", () => {
   it("sanitizes path separators in names", async () => {
     await cleanScratch();
     mockFetch(() => new Response("data"));
-    const ctx = createMattermostContext(config);
+    const ctx = createMattermostContext(config, undefined, { worktree: SCRATCH });
     const result = await getFileTool(ctx).execute(
       { file_id: FILE_ID, name: "../evil.txt" },
-      toolCtx(SCRATCH),
+      toolCtx(),
     );
     const output = typeof result === "string" ? result : result.output;
     expect(output).toContain(".._evil.txt");
@@ -220,7 +212,7 @@ describe("mattermost_get_file", () => {
     );
     const downloadDir = resolve(SCRATCH, "attachments");
     const ctx = createMattermostContext(config, undefined, { downloadDir });
-    const result = await getFileTool(ctx).execute({ file_id: FILE_ID }, toolCtx(SCRATCH));
+    const result = await getFileTool(ctx).execute({ file_id: FILE_ID }, toolCtx());
     const output = typeof result === "string" ? result : result.output;
     expect(output).toContain(`${downloadDir}/report.csv`);
     expect(await Bun.file(`${downloadDir}/report.csv`).text()).toBe("data");
@@ -236,7 +228,7 @@ describe("mattermost_get_file", () => {
       downloadDir: "/proc/nonexistent/mm-files",
     });
     await expect(
-      getFileTool(ctx).execute({ file_id: FILE_ID, name: "saved.txt" }, toolCtx(SCRATCH)),
+      getFileTool(ctx).execute({ file_id: FILE_ID, name: "saved.txt" }, toolCtx()),
     ).rejects.toThrow(
       /^Download directory \/proc\/nonexistent\/mm-files could not be created \(E[A-Z]+\)$/,
     );
@@ -253,7 +245,7 @@ describe("mattermost_get_file", () => {
       downloadDir: join(blocker, "files"),
     });
     await expect(
-      getFileTool(ctx).execute({ file_id: FILE_ID, name: "saved.txt" }, toolCtx(SCRATCH)),
+      getFileTool(ctx).execute({ file_id: FILE_ID, name: "saved.txt" }, toolCtx()),
     ).rejects.toThrow(`could not be created (ENOTDIR)`);
     await cleanScratch();
   });
@@ -276,7 +268,7 @@ describe("mattermost_get_file", () => {
       downloadDir: "/proc/nonexistent/mm-files",
     });
     await expect(
-      getFileTool(ctx).execute({ file_id: FILE_ID, name: "saved.txt" }, toolCtx(SCRATCH)),
+      getFileTool(ctx).execute({ file_id: FILE_ID, name: "saved.txt" }, toolCtx()),
     ).rejects.toThrow("could not be created");
     expect(cancelled).toBe(true);
     await cleanScratch();
@@ -296,8 +288,8 @@ describe("mattermost_get_file", () => {
           { headers: { "Content-Length": String(256 * 1024 * 1024 + 1) } },
         ),
     );
-    const ctx = createMattermostContext(config);
-    await expect(getFileTool(ctx).execute({ file_id: FILE_ID }, toolCtx(SCRATCH))).rejects.toThrow(
+    const ctx = createMattermostContext(config, undefined, { worktree: SCRATCH });
+    await expect(getFileTool(ctx).execute({ file_id: FILE_ID }, toolCtx())).rejects.toThrow(
       "over the 256.0 MB limit",
     );
     expect(cancelled).toBe(true);
@@ -308,10 +300,10 @@ describe("mattermost_get_file", () => {
     await cleanScratch();
     let n = 0;
     mockFetch(() => new Response(`body-${n++}`));
-    const ctx = createMattermostContext(config);
+    const ctx = createMattermostContext(config, undefined, { worktree: SCRATCH });
     const results = await Promise.all([
-      getFileTool(ctx).execute({ file_id: FILE_ID, name: "notes.txt" }, toolCtx(SCRATCH)),
-      getFileTool(ctx).execute({ file_id: FILE_ID, name: "notes.txt" }, toolCtx(SCRATCH)),
+      getFileTool(ctx).execute({ file_id: FILE_ID, name: "notes.txt" }, toolCtx()),
+      getFileTool(ctx).execute({ file_id: FILE_ID, name: "notes.txt" }, toolCtx()),
     ]);
     const paths = results.map((r) => (typeof r === "string" ? r : r.output).split(" ")[1] ?? "");
     expect(new Set(paths).size).toBe(2);
@@ -325,8 +317,8 @@ describe("mattermost_get_file", () => {
     const bytes = new Uint8Array(1024);
     for (let i = 0; i < bytes.length; i++) bytes[i] = (i * 7) % 256;
     mockFetch(() => new Response(bytes));
-    const ctx = createMattermostContext(config);
-    await getFileTool(ctx).execute({ file_id: FILE_ID, name: "blob.bin" }, toolCtx(SCRATCH));
+    const ctx = createMattermostContext(config, undefined, { worktree: SCRATCH });
+    await getFileTool(ctx).execute({ file_id: FILE_ID, name: "blob.bin" }, toolCtx());
     const saved = new Uint8Array(
       await Bun.file(`${SCRATCH}/.opencode/mm-files/blob.bin`).arrayBuffer(),
     );
@@ -343,10 +335,10 @@ describe("mattermost_get_file", () => {
         Bun.write(`${dir}/${i === 0 ? "notes.txt" : `notes-${i}.txt`}`, "old"),
       ),
     );
-    const ctx = createMattermostContext(config);
+    const ctx = createMattermostContext(config, undefined, { worktree: SCRATCH });
     const result = await getFileTool(ctx).execute(
       { file_id: FILE_ID, name: "notes.txt" },
-      toolCtx(SCRATCH),
+      toolCtx(),
     );
     const output = typeof result === "string" ? result : result.output;
     expect(output).not.toContain("notes-100.txt");
@@ -364,7 +356,7 @@ describe("mattermost_get_file", () => {
 
   // Only the CLI gets here: the plugin refuses to start without a `downloadDir`.
   it("names the CLI's default in the description when no directory is configured", () => {
-    const ctx = createMattermostContext(config);
+    const ctx = createMattermostContext(config, undefined, { worktree: SCRATCH });
     expect(getFileTool(ctx).description).toBe(
       "Download a Mattermost file attachment by id into <worktree>/.opencode/mm-files/ and return the saved path.",
     );

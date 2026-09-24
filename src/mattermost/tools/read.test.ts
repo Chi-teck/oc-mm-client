@@ -9,27 +9,21 @@ import type { ChannelMembership, ServerChannel } from "@mattermost/types/channel
 import type { FileInfo } from "@mattermost/types/files";
 import type { PaginatedPostList, Post, PostList } from "@mattermost/types/posts";
 import type { Reaction } from "@mattermost/types/reactions";
-import type { ToolContext } from "@opencode-ai/plugin";
 import { createMattermostContext } from "../context.js";
 import type { MattermostEnv } from "../env.js";
 import { listChannelsTool } from "./channels.js";
 import { getPostTool, readPostsTool, readUnreadTool } from "./read.js";
+import type { MmToolContext } from "./types.js";
 
 const config: MattermostEnv = { url: "https://mm.example.com", token: "tok", team: "my-team" };
 const ME_ID = "uuuuuuuuuuuuuuuuuuuuuuuuu1";
 const TEAM_ID = "tttttttttttttttttttttttttt";
 const CHANNEL_ID = "ccccccccccccccccccccccccc1";
 
-const toolCtx = {
-  sessionID: "s",
-  messageID: "m",
-  agent: "a",
-  directory: "/tmp/opencode",
-  worktree: "/tmp/opencode",
-  abort: new AbortController().signal,
-  metadata: () => {},
-  ask: async () => {},
-} as ToolContext;
+const toolCtx: MmToolContext = {
+  signal: new AbortController().signal,
+  confirm: async () => {},
+};
 
 // When `MEMBERSHIPS[0]` last saw the channel. Default posts are created after it, so the fixture
 // is coherent: the member has read up to here, and everything below is genuinely unread.

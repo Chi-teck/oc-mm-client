@@ -1,7 +1,8 @@
 import { ClientError } from "@mattermost/client";
 import type { Post, PostList } from "@mattermost/types/posts";
-import { tool } from "@opencode-ai/plugin";
+import { z } from "zod";
 import { type MattermostContext, unreadCount } from "../context.js";
+import { tool } from "./types.js";
 
 // `last_viewed_at === 0` means the channel was never opened, so its whole history reads as unread.
 const FIRST_RUN_NOTE = "first run: full history unread, consider mark_read bootstrap";
@@ -13,22 +14,22 @@ export function readPostsTool(ctx: MattermostContext) {
   return tool({
     description:
       'Read posts from a Mattermost channel. Branches: thread_root_id → a thread\'s root plus its newest replies; pinned → pinned posts; before → posts older than a post id; since → posts since a time ("2h", "30m", ISO date, epoch ms); otherwise latest posts (limit, default 30). Bodies are cut at 500 chars unless full=true.',
-    args: {
-      channel: tool.schema.string().describe("Channel name or 26-char id"),
-      since: tool.schema
+    input: z.object({
+      channel: z.string().describe("Channel name or 26-char id"),
+      since: z
         .string()
         .optional()
         .describe('Posts since this time: "2h", "30m", "45s", "3d", ISO date, or epoch ms'),
-      before: tool.schema
+      before: z
         .string()
         .optional()
         .describe("Read the posts older than this post id (page backwards)"),
-      thread_root_id: tool.schema
+      thread_root_id: z
         .string()
         .optional()
         .describe("Read this thread: its root post plus the newest replies (up to limit)"),
-      pinned: tool.schema.boolean().optional().describe("Read only pinned posts"),
-      limit: tool.schema
+      pinned: z.boolean().optional().describe("Read only pinned posts"),
+      limit: z
         .number()
         .int()
         .min(1)
@@ -37,11 +38,11 @@ export function readPostsTool(ctx: MattermostContext) {
         .describe(
           "Max posts to fetch and show (default 30, max 200); on a thread it counts replies and the root is shown on top of them",
         ),
-      full: tool.schema
+      full: z
         .boolean()
         .optional()
         .describe("Print message bodies in full instead of cutting them at 500 chars"),
-    },
+    }),
     execute: async ({ channel, since, before, thread_root_id: rootId, pinned, limit, full }) => {
       const resolved = await ctx.resolveChannel(channel);
       const max = limit ?? DEFAULT_LIMIT;
@@ -88,13 +89,13 @@ export function getPostTool(ctx: MattermostContext) {
   return tool({
     description:
       "Read one Mattermost post by id — its channel, author, body, reactions and attachments. Use it to check a single post (one just written, one named in a search hit) instead of reading the channel and filtering.",
-    args: {
-      post_id: tool.schema.string().describe("26-char post id"),
-      full: tool.schema
+    input: z.object({
+      post_id: z.string().describe("26-char post id"),
+      full: z
         .boolean()
         .optional()
         .describe("Print the message body in full instead of cutting it at 500 chars"),
-    },
+    }),
     execute: async ({ post_id: postId, full }) => {
       let post: Post;
       try {
@@ -128,20 +129,20 @@ export function readUnreadTool(ctx: MattermostContext) {
   return tool({
     description:
       "Show unread message and mention counts per channel; with a channel arg, show the unread posts in that channel.",
-    args: {
-      channel: tool.schema.string().optional().describe("Channel name or 26-char id"),
-      limit: tool.schema
+    input: z.object({
+      channel: z.string().optional().describe("Channel name or 26-char id"),
+      limit: z
         .number()
         .int()
         .min(1)
         .max(200)
         .optional()
         .describe("Max unread posts to fetch and show (default 30, max 200)"),
-      full: tool.schema
+      full: z
         .boolean()
         .optional()
         .describe("Print message bodies in full instead of cutting them at 500 chars"),
-    },
+    }),
     execute: async ({ channel, limit, full }) => {
       if (channel === undefined) {
         const team = await ctx.team();

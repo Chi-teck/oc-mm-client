@@ -1,9 +1,10 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { existsSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, realpath, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { PluginInput } from "@opencode-ai/plugin";
+import type { Plugin } from "@opencode/plugin";
+import type { Info as ToolInfo } from "@opencode/plugin/promise/tool";
 import { startMockMattermost } from "../test/mock-server.js";
 import plugin from "./index.js";
 
@@ -15,25 +16,67 @@ const asRoot = process.getuid?.() === 0;
 
 let cwd: string;
 let sandbox: string;
-let input: PluginInput;
+let input: Where;
 let saved: Record<string, string | undefined>;
-const logs: string[] = [];
 
-type LogEndpoint = (options: { body: { level: string; message: string } }) => Promise<unknown>;
-
-/** The plugin reports through opencode's log endpoint; this records what it would have sent. */
-async function recordLog({ body }: { body: { level: string; message: string } }) {
-  logs.push(`${body.level}: ${body.message}`);
-  return { data: true };
+/** The two paths `setup` takes from `ctx.location`. */
+interface Where {
+  directory: string;
+  worktree: string;
 }
 
 /**
- * `worktree` defaults to `directory` because opencode always sends both — the field is non-optional
- * in `PluginInput` — and the cast below would otherwise let the suite drive a branch that cannot
- * happen in production while leaving the real one untested.
+ * `worktree` defaults to `directory` because opencode always sends both — `project.directory` is
+ * non-optional in `Location.Info` — and the cast below would otherwise let the suite drive a branch
+ * that cannot happen in production while leaving the real one untested.
  */
-function pluginInput(directory: string, worktree = directory, log: LogEndpoint = recordLog) {
-  return { directory, worktree, client: { app: { log } } } as unknown as PluginInput;
+function pluginInput(directory: string, worktree = directory): Where {
+  return { directory, worktree };
+}
+
+/**
+ * Just the parts of the v2 context `setup` touches. The RPC side answers nothing: whether a write
+ * gets confirmed is `prompt.test.ts`'s business, and here no TUI is ever attached.
+ */
+function fakeContext(where: Where, options: unknown, tools: Record<string, ToolInfo>) {
+  return {
+    location: {
+      directory: where.directory,
+      project: { id: "p", directory: where.worktree, canonical: where.worktree },
+    },
+    options: options ?? {},
+    rpc: {
+      register: async () => ({ dispose: async () => {}, events: { emit: async () => {} } }),
+    },
+    tool: {
+      transform: async (edit: (editor: { add(tool: ToolInfo): void }) => void) => {
+        edit({
+          add: (tool) => {
+            tools[tool.name] = tool;
+          },
+        });
+        return { dispose: async () => {} };
+      },
+    },
+  } as unknown as Plugin.Context;
+}
+
+/** Runs `setup` and returns the tools it registered, keyed by name. */
+async function start(where: Where, options?: unknown): Promise<Record<string, ToolInfo>> {
+  const tools: Record<string, ToolInfo> = {};
+  await plugin.setup(fakeContext(where, options, tools));
+  return tools;
+}
+
+/** Runs `setup` expecting it to refuse, and returns the reason it gave. */
+async function refusal(where: Where, options?: unknown): Promise<string> {
+  const tools: Record<string, ToolInfo> = {};
+  const error = await plugin.setup(fakeContext(where, options, tools)).then(
+    () => new Error("setup did not refuse"),
+    (thrown: unknown) => thrown,
+  );
+  expect(tools).toEqual({});
+  return error instanceof Error ? error.message : String(error);
 }
 
 /** A throwaway project directory with the download directory the plugin insists on already in it. */
@@ -44,35 +87,20 @@ async function newProject(): Promise<string> {
 }
 
 /**
- * Starts the plugin on options it must refuse and returns what was logged. No mock server: the gate
- * returns before anything is probed, and the credentials are only there to prove that the refusal
+ * Starts the plugin on options it must refuse and returns the reason. No mock server: the gate
+ * throws before anything is probed, and the credentials are only there to prove that the refusal
  * was not about them.
  */
 async function refuseOptions(project: string, extra: Record<string, unknown>): Promise<string> {
   const options = { url: "https://mm.example.com", token: "tok", team: "my-team", ...extra };
-  expect(await plugin(pluginInput(project), options)).toEqual({});
-  return logs.join("\n");
+  return refusal(pluginInput(project), options);
 }
 
 const refuse = (project: string, downloadDir: unknown) => refuseOptions(project, { downloadDir });
 
-/** The `downloadDir` is a good one, so only the upload root can be what the log complains about. */
+/** The `downloadDir` is a good one, so only the upload root can be what the refusal is about. */
 const refuseUpload = (project: string, uploadRoot: unknown) =>
   refuseOptions(project, { downloadDir: DOWNLOAD_DIR, uploadRoot });
-
-/** The plugin's last resort when the log endpoint fails, so a test has to take stderr away first. */
-async function captureStderr<T>(run: () => Promise<T>): Promise<{ value: T; stderr: string }> {
-  const lines: string[] = [];
-  const original = console.error;
-  console.error = (...args: unknown[]) => {
-    lines.push(args.map(String).join(" "));
-  };
-  try {
-    return { value: await run(), stderr: lines.join("\n") };
-  } finally {
-    console.error = original;
-  }
-}
 
 beforeAll(async () => {
   cwd = process.cwd();
@@ -94,22 +122,18 @@ afterAll(async () => {
   await rm(sandbox, { recursive: true, force: true });
 });
 
-afterEach(() => {
-  logs.length = 0;
-});
-
 describe("plugin entry", () => {
   it("registers every Mattermost tool once the credentials validate", async () => {
     const server = startMockMattermost();
     try {
-      const hooks = await plugin(input, {
+      const tools = await start(input, {
         url: server.url,
         token: "tok",
         team: "my-team",
         downloadDir: DOWNLOAD_DIR,
       });
-      expect(Object.keys(hooks.tool ?? {})).toContain("mattermost_read_posts");
-      expect(Object.keys(hooks.tool ?? {})).toHaveLength(15);
+      expect(Object.keys(tools)).toContain("mattermost_read_posts");
+      expect(Object.keys(tools)).toHaveLength(15);
       expect(server.paths).toContain("/api/v4/users/me");
       expect(server.paths).toContain("/api/v4/teams/name/my-team");
     } finally {
@@ -117,60 +141,53 @@ describe("plugin entry", () => {
     }
   });
 
-  it("registers no tools when credentials are missing", async () => {
-    expect(await plugin(input, { downloadDir: DOWNLOAD_DIR })).toEqual({});
-    expect(logs.join("\n")).toContain("oc-mm-client disabled");
-  });
-
-  it("names only the credential that is actually missing", async () => {
-    const options = { url: "https://mm.example.com", token: "tok", downloadDir: DOWNLOAD_DIR };
-    expect(await plugin(input, options)).toEqual({});
-    expect(logs.join("\n")).toContain("oc-mm-client disabled: set OC_MM_TEAM");
-    expect(logs.join("\n")).toContain("the team plugin option");
-    expect(logs.join("\n")).not.toContain("OC_MM_URL");
-  });
-
-  it("survives a log endpoint that rejects, keeping the reason on stderr", async () => {
-    const server = startMockMattermost({ unauthorized: true });
-    const failing = pluginInput(sandbox, sandbox, async () => {
-      throw new Error("connect ECONNREFUSED");
-    });
+  it("registers direct tools, outside Code Mode, that answer with content", async () => {
+    const server = startMockMattermost();
+    const tctx = { sessionID: "s", signal: new AbortController().signal };
     try {
-      const { value, stderr } = await captureStderr(() =>
-        plugin(failing, {
-          url: server.url,
-          token: "bad",
-          team: "my-team",
-          downloadDir: DOWNLOAD_DIR,
-        }),
-      );
-      expect(value).toEqual({});
-      expect(stderr).toContain("oc-mm-client disabled");
-      // The transport failure must not stand in for the diagnosis it was carrying.
-      expect(stderr).toContain("Invalid or expired session");
+      const options = { url: server.url, token: "tok", team: "my-team", downloadDir: DOWNLOAD_DIR };
+      const list = (await start(input, options)).mattermost_list_channels;
+      expect(list?.options).toEqual({ codemode: false });
+      const result = await list?.execute({}, tctx as never);
+      expect(result?.content).toContain("- my-channel — My Channel");
+      expect(result?.metadata).toEqual({ title: "Mattermost: 1 channels" });
     } finally {
       server.stop();
     }
   });
 
-  it("falls back to stderr when the log endpoint answers with an error", async () => {
-    // A 400 from `/log` comes back as a value, not a rejection: the generated client only throws
-    // when asked to, so an unexamined result would leave the plugin disabled and silent.
-    const refusing = pluginInput(sandbox, sandbox, async () => ({
-      data: undefined,
-      error: { name: "BadRequest", data: { message: "bad request" } },
-    }));
-    const { value, stderr } = await captureStderr(() => plugin(refusing, undefined));
-    expect(value).toEqual({});
-    expect(stderr).toContain("oc-mm-client disabled");
+  it("refuses a write when no TUI is attached to confirm it, before sending anything", async () => {
+    const server = startMockMattermost();
+    const tctx = { sessionID: "s", signal: new AbortController().signal };
+    try {
+      const options = { url: server.url, token: "tok", team: "my-team", downloadDir: DOWNLOAD_DIR };
+      const post = (await start(input, options)).mattermost_create_post;
+      await expect(
+        post?.execute({ channel: "my-channel", message: "hi" }, tctx as never),
+      ).rejects.toThrow("no opencode TUI is attached");
+      expect(server.paths).not.toContain("/api/v4/posts");
+    } finally {
+      server.stop();
+    }
+  });
+
+  it("registers no tools when credentials are missing", async () => {
+    expect(await refusal(input, { downloadDir: DOWNLOAD_DIR })).toContain("oc-mm-client disabled");
+  });
+
+  it("names only the credential that is actually missing", async () => {
+    const options = { url: "https://mm.example.com", token: "tok", downloadDir: DOWNLOAD_DIR };
+    const line = await refusal(input, options);
+    expect(line).toContain("oc-mm-client disabled: set OC_MM_TEAM");
+    expect(line).toContain("the team plugin option");
+    expect(line).not.toContain("OC_MM_URL");
   });
 
   it("registers no tools when the server rejects the token", async () => {
     const server = startMockMattermost({ unauthorized: true });
     try {
       const options = { url: server.url, token: "bad", team: "my-team", downloadDir: DOWNLOAD_DIR };
-      expect(await plugin(input, options)).toEqual({});
-      expect(logs.join("\n")).toContain("oc-mm-client disabled");
+      expect(await refusal(input, options)).toContain("oc-mm-client disabled");
     } finally {
       server.stop();
     }
@@ -179,14 +196,14 @@ describe("plugin entry", () => {
   it("blames the token, not the team, when the server rejects the token", async () => {
     const server = startMockMattermost({ unauthorized: true });
     try {
-      await plugin(input, {
+      const line = await refusal(input, {
         url: server.url,
         token: "bad",
         team: "my-team",
         downloadDir: DOWNLOAD_DIR,
       });
-      expect(logs.join("\n")).toContain("Invalid or expired session");
-      expect(logs.join("\n")).not.toContain("team not found");
+      expect(line).toContain("Invalid or expired session");
+      expect(line).not.toContain("team not found");
     } finally {
       server.stop();
     }
@@ -196,11 +213,9 @@ describe("plugin entry", () => {
     const server = startMockMattermost({ silentError: true });
     try {
       const options = { url: server.url, token: "tok", team: "my-team", downloadDir: DOWNLOAD_DIR };
-      expect(await plugin(input, options)).toEqual({});
-      expect(logs.join("\n")).toContain(
+      expect(await refusal(input, options)).toBe(
         "oc-mm-client disabled: Mattermost API 500 /api/v4/users/me: the server sent no message",
       );
-      expect(logs.join("\n")).not.toContain("disabled: \n");
     } finally {
       server.stop();
     }
@@ -212,8 +227,8 @@ describe("plugin entry", () => {
     process.env.OC_MM_TOKEN = "tok";
     process.env.OC_MM_TEAM = "my-team";
     try {
-      const hooks = await plugin(input, { downloadDir: DOWNLOAD_DIR });
-      expect(Object.keys(hooks.tool ?? {})).toHaveLength(15);
+      const tools = await start(input, { downloadDir: DOWNLOAD_DIR });
+      expect(Object.keys(tools)).toHaveLength(15);
     } finally {
       for (const key of OC_MM_KEYS) delete process.env[key];
       server.stop();
@@ -228,8 +243,8 @@ describe("plugin entry", () => {
       [`OC_MM_URL=${server.url}`, "OC_MM_TOKEN=tok", "OC_MM_TEAM=my-team"].join("\n"),
     );
     try {
-      const hooks = await plugin(pluginInput(project), { downloadDir: DOWNLOAD_DIR });
-      expect(Object.keys(hooks.tool ?? {})).toHaveLength(15);
+      const tools = await start(pluginInput(project), { downloadDir: DOWNLOAD_DIR });
+      expect(Object.keys(tools)).toHaveLength(15);
       // The file's credentials stay out of the environment opencode hands to spawned processes.
       for (const key of OC_MM_KEYS) expect(process.env[key]).toBeUndefined();
     } finally {
@@ -245,13 +260,13 @@ describe("plugin entry", () => {
     // cwd would produce the same string and the assertion would prove nothing.
     const project = await newProject();
     try {
-      const hooks = await plugin(pluginInput(project), {
+      const tools = await start(pluginInput(project), {
         url: server.url,
         token: "tok",
         team: "my-team",
         downloadDir: DOWNLOAD_DIR,
       });
-      const def = hooks.tool?.mattermost_get_file;
+      const def = tools.mattermost_get_file;
       expect(def?.description).toContain(join(project, DOWNLOAD_DIR));
     } finally {
       await rm(project, { recursive: true, force: true });
@@ -263,15 +278,14 @@ describe("plugin entry", () => {
     const server = startMockMattermost();
     const project = await newProject();
     try {
-      const hooks = await plugin(pluginInput(project), {
+      const tools = await start(pluginInput(project), {
         url: server.url,
         token: "tok",
         team: "my-team",
         downloadDir: "attachments/../attachments",
       });
-      const def = hooks.tool?.mattermost_get_file;
+      const def = tools.mattermost_get_file;
       expect(def?.description).toContain(join(project, DOWNLOAD_DIR));
-      expect(logs.join("\n")).not.toContain("downloadDir");
     } finally {
       await rm(project, { recursive: true, force: true });
       server.stop();
@@ -284,13 +298,13 @@ describe("plugin entry", () => {
     try {
       // opencode started in a subdirectory: `..` leaves the session directory but not the worktree,
       // which is the root `read` permissions are resolved against.
-      const hooks = await plugin(pluginInput(join(project, "sub"), project), {
+      const tools = await start(pluginInput(join(project, "sub"), project), {
         url: server.url,
         token: "tok",
         team: "my-team",
         downloadDir: "../attachments",
       });
-      const def = hooks.tool?.mattermost_get_file;
+      const def = tools.mattermost_get_file;
       expect(def?.description).toContain(join(project, DOWNLOAD_DIR));
     } finally {
       await rm(project, { recursive: true, force: true });
@@ -303,7 +317,7 @@ describe("plugin entry", () => {
     try {
       // The whole message: credentials that are fine have no business being in it.
       expect(await refuse(project, undefined)).toBe(
-        "error: oc-mm-client disabled: set the downloadDir plugin option",
+        "oc-mm-client disabled: set the downloadDir plugin option",
       );
     } finally {
       await rm(project, { recursive: true, force: true });
@@ -434,14 +448,13 @@ describe("plugin entry", () => {
     try {
       // The one place `uploadRoot` differs from `downloadDir`: absent is the default, not a
       // mistake, so an existing config keeps working without an edit.
-      const hooks = await plugin(pluginInput(project), {
+      const tools = await start(pluginInput(project), {
         url: server.url,
         token: "tok",
         team: "my-team",
         downloadDir: DOWNLOAD_DIR,
       });
-      expect(Object.keys(hooks.tool ?? {})).toHaveLength(15);
-      expect(logs.join("\n")).not.toContain("uploadRoot");
+      expect(Object.keys(tools)).toHaveLength(15);
     } finally {
       await rm(project, { recursive: true, force: true });
       server.stop();
@@ -455,15 +468,14 @@ describe("plugin entry", () => {
     // be refused as missing, and the plugin would register nothing.
     await mkdir(join(project, "uploads"));
     try {
-      const hooks = await plugin(pluginInput(project), {
+      const tools = await start(pluginInput(project), {
         url: server.url,
         token: "tok",
         team: "my-team",
         downloadDir: DOWNLOAD_DIR,
         uploadRoot: "uploads",
       });
-      expect(Object.keys(hooks.tool ?? {})).toHaveLength(15);
-      expect(logs.join("\n")).not.toContain("uploadRoot");
+      expect(Object.keys(tools)).toHaveLength(15);
     } finally {
       await rm(project, { recursive: true, force: true });
       server.stop();
@@ -476,14 +488,14 @@ describe("plugin entry", () => {
     try {
       // Unlike `downloadDir`: nothing is written there, and `"/"` is how a caller keeps the
       // pre-v0.4.0 behaviour of attaching any file on the machine.
-      const hooks = await plugin(pluginInput(project), {
+      const tools = await start(pluginInput(project), {
         url: server.url,
         token: "tok",
         team: "my-team",
         downloadDir: DOWNLOAD_DIR,
         uploadRoot: "/",
       });
-      expect(Object.keys(hooks.tool ?? {})).toHaveLength(15);
+      expect(Object.keys(tools)).toHaveLength(15);
     } finally {
       await rm(project, { recursive: true, force: true });
       server.stop();
@@ -529,8 +541,7 @@ describe("plugin entry", () => {
     try {
       // Both mistakes in one startup: reporting whichever gate ran first would cost a restart to
       // learn about the other.
-      expect(await plugin(pluginInput(project), { downloadDir: "../escape" })).toEqual({});
-      const line = logs.join("\n");
+      const line = await refusal(pluginInput(project), { downloadDir: "../escape" });
       expect(line).toContain("oc-mm-client disabled: set OC_MM_URL, OC_MM_TOKEN, OC_MM_TEAM");
       expect(line).toContain("; downloadDir ../escape resolves to ");
     } finally {
@@ -547,8 +558,8 @@ describe("plugin entry", () => {
     );
     process.env.OC_MM_TEAM = "my-team";
     try {
-      const hooks = await plugin(pluginInput(project), { downloadDir: DOWNLOAD_DIR });
-      expect(Object.keys(hooks.tool ?? {})).toHaveLength(15);
+      const tools = await start(pluginInput(project), { downloadDir: DOWNLOAD_DIR });
+      expect(Object.keys(tools)).toHaveLength(15);
       expect(server.paths).toContain("/api/v4/teams/name/my-team");
     } finally {
       for (const key of OC_MM_KEYS) delete process.env[key];
@@ -568,8 +579,8 @@ describe("plugin entry", () => {
     // and since one missing key rejects all three, it disabled the plugin entirely.
     process.env.OC_MM_TEAM = "";
     try {
-      const hooks = await plugin(pluginInput(project), { downloadDir: DOWNLOAD_DIR });
-      expect(Object.keys(hooks.tool ?? {})).toHaveLength(15);
+      const tools = await start(pluginInput(project), { downloadDir: DOWNLOAD_DIR });
+      expect(Object.keys(tools)).toHaveLength(15);
       expect(server.paths).toContain("/api/v4/teams/name/my-team");
     } finally {
       for (const key of OC_MM_KEYS) delete process.env[key];

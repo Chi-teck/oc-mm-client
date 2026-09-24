@@ -2,17 +2,16 @@
 
 [![CI](https://github.com/Chi-teck/oc-mm-client/actions/workflows/ci.yml/badge.svg)](https://github.com/Chi-teck/oc-mm-client/actions/workflows/ci.yml)
 
-Mattermost client for [opencode](https://opencode.ai). It gives the agent tools to read and post
-messages, browse channels, search and download attachments, plus a raw REST fallback for the
-endpoints those do not cover.
+Mattermost client for [opencode](https://opencode.ai): tools to read and post messages, browse
+channels, search and download attachments, plus a raw REST fallback.
 
-Requirements: [Bun](https://bun.sh) 1.0+, opencode 1.18+, `git` on the machine, and a Mattermost
+Requirements: [Bun](https://bun.sh) 1.0+, opencode 2.0.14+, `git`, and a Mattermost
 [personal access token](https://developers.mattermost.com/integrate/reference/personal-access-token/).
+For opencode v1, use the `1.x` branch (plugin 0.x, `v0.*` tags), which gets fixes only.
 
 ## Install
 
-The plugin is not on npm. Point `opencode.json` at the git repository; opencode installs it on
-startup.
+The plugin is not on npm; opencode installs it from git on startup.
 
 ```sh
 mkdir -p .opencode/mm-files
@@ -21,26 +20,33 @@ mkdir -p .opencode/mm-files
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": [["github:Chi-teck/oc-mm-client#v0.6.0", { "downloadDir": ".opencode/mm-files" }]],
-  "permission": {
-    "mattermost_create_post": "ask",
-    "mattermost_react": "ask",
-    "mattermost_edit_post": "ask",
-    "mattermost_dm": "ask",
-    "mattermost_api": "ask"
-  }
+  "plugins": [
+    {
+      "package": "github:Chi-teck/oc-mm-client#v1.0.0",
+      "options": { "downloadDir": ".opencode/mm-files" }
+    }
+  ]
 }
 ```
 
-The `#v0.6.0` tag is deliberate. A bare `github:Chi-teck/oc-mm-client` tracks the default branch,
-so an unrelated push changes the code under a running install. opencode caches by the literal spec
-string, so bumping the tag is also what triggers a re-download.
+Keep the tag: a bare spec tracks the default branch, and since opencode caches by the literal spec,
+bumping the tag is what triggers a re-download.
 
-Do not skip the `permission` block. The write tools raise a permission request, but with no matching
-rule opencode's default allow-all approves it silently, and the plugin has no channel or user
-allowlist of its own. `mattermost_api` matters most: it reaches every endpoint the token can, so
-without a rule a raw `DELETE` goes through unattended. It asks only for non-GET requests; reads run
-unprompted like the other read tools.
+### Confirmation
+
+opencode v2 has no permission prompt for plugin tools (`"ask"` rules do nothing for them), so the
+plugin's TUI half shows an Allow/Deny dialog before every write, naming what it is about to do.
+Nothing is sent before the answer. It fails closed:
+
+- With no TUI attached (`opencode run`, a bare `opencode serve`, the web app) writes are refused.
+  Reads work everywhere.
+- With several TUIs, each asks; the first answer counts and the others close their dialog.
+- An unanswered dialog gives up after 10 minutes, closing the last TUI refuses what it left open,
+  and an interrupted tool call withdraws the dialog.
+
+There is no channel or user allowlist, so the dialog is the only gate — `mattermost_api` matters
+most, as it reaches every endpoint the token can (it asks only for non-GET requests). A `"deny"`
+rule still removes a tool from the agent's toolset.
 
 ## Configuration
 
@@ -52,103 +58,58 @@ export OC_MM_TOKEN=your-personal-access-token
 export OC_MM_TEAM=my-team
 ```
 
-Every setting can also be passed inline as a plugin option, which takes precedence over the
-environment:
+Plugin options take precedence over the environment:
 
 ```json
-{
-  "plugin": [
-    [
-      "github:Chi-teck/oc-mm-client#v0.6.0",
-      {
-        "url": "https://mattermost.example.com",
-        "token": "…",
-        "team": "…",
-        "downloadDir": "attachments"
-      }
-    ]
-  ]
+"options": {
+  "url": "https://mattermost.example.com",
+  "token": "…",
+  "team": "…",
+  "downloadDir": "attachments"
 }
 ```
 
-`downloadDir` says where `mattermost_get_file` saves attachments. It is the one setting with no
-default and no environment variable: the plugin does not start without it, because a client that
-cannot agree with you on where files land is one you would rather find out about at startup than
-after an attachment has gone somewhere unexpected. A relative value resolves against the opencode
-project directory — the same root `.env.local` is read from — and it has to name a directory that:
+`downloadDir` (required, no default) is where `mattermost_get_file` saves attachments. A relative
+value resolves against the opencode project directory. It must be an existing, writable directory
+inside the git worktree (also after resolving symlinks, since opencode checks the agent's `read`
+permission against the worktree), and neither the worktree root nor inside `.git`. It is never
+created for you.
 
-- already exists and is writable; the plugin never creates it, so a typo cannot quietly become a
-  second empty directory next to the one you meant;
-- stays inside the git worktree, both as written and after symlinks are resolved, since opencode
-  resolves the agent's `read` permission against it: a file saved outside is one the agent cannot
-  open;
-- is neither the worktree root — attachments would land among the tracked sources — nor anything
-  inside `.git`.
+`uploadRoot` (optional, defaults to the git worktree) confines `mattermost_create_post`
+attachments: every file must resolve inside it, symlinks included. It need not sit inside the
+worktree; `"/"` allows any file the process can read. Relative attachments resolve against the
+session directory. The `oc-mm` CLI is unconfined. Limits:
 
-`uploadRoot` is the other direction: every file `mattermost_create_post` attaches has to resolve
-inside it. It defaults to the git worktree, so the ordinary workflow — the agent writes a file, or
-downloads one with `mattermost_get_file`, then attaches it — needs no configuration, and a file
-outside the project is refused with an error naming this option. Unlike `downloadDir` it is
-optional, it is never written to, and it does not have to sit inside the worktree: `"/"` restores
-the pre-v0.4.0 behaviour of attaching any file the process can read. A relative value resolves
-against the project directory, and a relative *attachment* still resolves against the tool call's
-working directory rather than against this root. Both sides of the comparison are resolved through
-symlinks, so a link inside the root cannot point out of it. The `oc-mm` CLI is deliberately
-unconfined — the path there was typed by you, not produced by a model.
+- It is not an exfiltration control: an agent can put a secret in the `message` itself.
+- It does not see opencode's `read` rules; if you deny paths by pattern (`*.env`), set
+  `uploadRoot` narrowly enough that they do not matter.
+- The path is checked, then opened, so a file swapped in between is not caught.
 
-Two things it is not. It is not an exfiltration control: an agent with `read` and `bash` can put a
-secret in the `message` argument, and nothing here reads message bodies. And it cannot see
-opencode's own `read` rules — a root is one boundary, a permission block is a list of globs. If you
-deny paths by pattern (`*.env`, say), set `uploadRoot` narrowly enough that the patterns do not
-matter; the worktree default will happily attach a denied file that lives inside the project. There
-is also a gap this does not close: the path is checked and then opened, so a file swapped between
-the two is not caught. Closing that needs an `fstat` on the open handle, which is not implemented —
-it requires local write access to the root to exploit.
+Any invalid value, or missing or rejected credentials, stops the plugin from loading with one line
+listing every problem. opencode marks the plugin as failed and keeps that line in the plugin's
+status and in `~/.local/share/opencode/log/opencode.log`; the session starts without the tools. An
+unreachable host is given up on after 10 seconds.
 
-A value that is not a string, or is blank, is refused rather than ignored silently. None of this is
-patched over with a fallback: every one of these mistakes disables the plugin, with one line in the
-log naming the value, the path it resolved to, and what is wrong with it. Missing or rejected
-credentials get the same treatment, and the two are reported together in that one line, so a config
-with a mistake in each does not cost two restarts. Nothing here ever throws into opencode's own
-startup: the plugin logs and registers no tools. An unreachable host gets 10 seconds before it gives
-up, so it cannot hang the session either.
+Requests send `Accept-Language: en`, so server errors come back in English whatever the server's
+default locale.
 
-Every request asks for English (`Accept-Language: en`). Mattermost picks the language of its error
-messages from that header alone — not from the token user's locale — so on a server whose default
-locale is not English the tools would otherwise report failures in that language.
-
-The `.env.local` file is a development convenience only — it is read from the opencode project
-directory (the one `--dir` points at, not the shell's working directory), so an installed plugin
-will not find one inside the package. Its values are read straight into the plugin and never
-exported into the process environment, so they are not inherited by the commands opencode runs.
-Use real environment variables or plugin options instead.
+`.env.local` is a development convenience: it is read from the opencode project directory (the one
+`--dir` points at), never exported to the commands opencode runs, and an installed plugin will not
+find one. Use environment variables or plugin options instead.
 
 ## Upgrading
 
-opencode caches a plugin by the literal spec string, so nothing changes under a running install
-until you edit the tag; what each release asks of an existing config is below.
+Nothing changes under a running install until you edit the tag.
 
-- **v0.6.0** adds `mattermost_follow_thread` and `mattermost_unfollow_thread`: the bot can subscribe
-  to a thread's replies and, the half that was missing, leave one it was pulled into. Both are
-  ungated like `mattermost_mark_read`, so no config edit is required. A `permission` rule cannot
-  turn that into a prompt — opencode evaluates the block only for tools that raise a permission
-  request, and these two deliberately do not — but `"mattermost_unfollow_thread": "deny"` drops the
-  tool from the agent's toolset outright, which is the way to withhold one of them.
-- **v0.5.1** is v0.5.0's code with the release metadata that tag shipped without: `v0.5.0` still
-  names `#v0.4.0` in its own install example and reports `0.4.0` as its version. Install this one
-  instead; nothing else differs, and nothing is asked of an existing config beyond the tag.
-- **v0.5.0** adds `schedule_at` to `mattermost_create_post`: the post is handed to the server to go
-  out later — `"2h"`, an ISO datetime or epoch ms, up to a year out — instead of immediately.
-  Nothing else changes, and no config edit is required: the existing `mattermost_create_post` rule
-  gates a scheduled post like any other, and the confirmation names the resolved time and its zone,
-  since the send itself happens unattended.
-- **v0.4.0** confines `mattermost_create_post` attachments to `uploadRoot`, which defaults to the
-  git worktree. Attaching `/tmp/report.pdf`, a file in a sibling checkout, or a path reached through
-  a symlink that leaves the project now fails with an error naming the option. Nothing else changes:
-  every other tool, and every post without attachments, behaves as before. No config edit is
-  required to stay on the happy path; `"uploadRoot": "/"` restores the old behaviour outright.
-- **v0.3.0** made `downloadDir` mandatory — the plugin does not start without it — and the directory
-  has to exist already, since it is never created for you.
+- **v1.0.0** moves to opencode v2 (v1 cannot load it, and v2 cannot load v0.x). The entry becomes
+  `"plugins": [{ "package": …, "options": { … } }]`, and the `permission` `"ask"` rules go — writes
+  are confirmed by the plugin's own [dialog](#confirmation), and refused under `opencode run`. A
+  startup problem shows as a failed plugin. Tool names, arguments and options are unchanged.
+- **v0.6.0** adds the ungated `mattermost_follow_thread` and `mattermost_unfollow_thread`.
+- **v0.5.1** is v0.5.0 with correct release metadata; install it instead of v0.5.0.
+- **v0.5.0** adds `schedule_at` to `mattermost_create_post`.
+- **v0.4.0** confines attachments to `uploadRoot`; `"uploadRoot": "/"` restores the old behaviour.
+- **v0.3.0** makes `downloadDir` mandatory, and the directory must already exist.
 
 ## Tools
 
@@ -170,53 +131,44 @@ until you edit the tag; what each release asks of an existing config is below.
 | `mattermost_dm` | Open (or reuse) a direct-message channel with a user. |
 | `mattermost_api` | Fallback: raw request to any `/api/v4` endpoint. `path`, plus optional `method`, `body` and `full`. |
 
-`mattermost_create_post`, `mattermost_react`, `mattermost_edit_post` and `mattermost_dm` are the
-write tools gated by the `permission` block above; `mattermost_api` joins them for any method other
-than `GET`. `mattermost_mark_read`, `mattermost_follow_thread` and `mattermost_unfollow_thread` also
-change server state but are deliberately ungated: they touch only your own unread markers and your
-own thread subscriptions.
+`mattermost_create_post`, `mattermost_react`, `mattermost_edit_post`, `mattermost_dm` and non-GET
+`mattermost_api` calls need [confirmation](#confirmation). `mattermost_mark_read` and the thread
+follow tools are ungated: they touch only your own unread markers and subscriptions.
 
-Posting into a thread follows it again, so an unfollow has to be the last write of a turn that also
-replies there. No tool reads follow state back, but `mattermost_api` does:
-`GET /users/me/teams/{team_id}/threads/<root_id>` answers 200 while you follow the thread and 404
-once you do not — and 404 either way for a root post nobody has replied to yet, which is not a
-thread the server tracks.
+Posting into a thread follows it again, so unfollow last. To check follow state, call
+`mattermost_api` with `GET /users/me/teams/{team_id}/threads/<root_id>`: 200 while followed, 404
+otherwise (also for a root with no replies yet).
 
-`schedule_at` on `mattermost_create_post` takes `"30m"`, `"2h"`, `"3d"`, an ISO 8601 datetime or
-epoch milliseconds — the same grammar as `since` on the reads, added to now instead of subtracted,
-and capped at a year out. A datetime carrying no offset is read as the plugin host's local time; a
-bare *date* is not, since `2027-06-01` is UTC midnight by JavaScript's parsing rule, so write the
-time out when the hour matters. The confirmation prompt names the resolved time and its zone, since
-approving a scheduled post approves a send that happens with nobody watching. Delivery is a
-server-side job, so a message arrives at or shortly after its time, not to the second. There is no tool for the rest of the lifecycle; `mattermost_api`
-covers it: `GET /posts/scheduled/team/{team_id}?includeDirectChannels=true` lists them (including
-the `error_code` of one that failed to send), and `DELETE /posts/schedule/<id>` cancels one.
+`schedule_at` takes `"30m"`, `"2h"`, `"3d"`, an ISO 8601 datetime or epoch ms, up to a year out. A
+datetime without an offset is the host's local time, but a bare date (`2027-06-01`) is UTC
+midnight. The confirmation names the resolved time and zone; delivery is a server-side job, so it
+may run slightly late. Manage scheduled posts via `mattermost_api`:
+`GET /posts/scheduled/team/{team_id}?includeDirectChannels=true` lists them,
+`DELETE /posts/schedule/<id>` cancels one.
 
-`mattermost_api` exists so a rare endpoint does not need a tool of its own. It takes a path relative
-to `/api/v4` (`/users/me/status`), expands the `{team_id}` and `{user_id}` placeholders, and returns
-the response body as it came, cut at 4000 characters unless `full=true`. Prefer the dedicated tools
-where they exist — they resolve channel names and format their output for reading.
+`mattermost_api` takes a path under `/api/v4`, expands `{team_id}` and `{user_id}`, and returns
+the body cut at 4000 characters unless `full=true`. Prefer the dedicated tools where they exist.
 
-Real-time WebSocket events are not supported yet; every read goes through the REST API.
+Real-time WebSocket events are not supported; every read goes through the REST API.
 
 ## Development
 
 ```sh
 bun install
-cp .env.example .env.local
+cp .env.example .env.local   # set OC_MM_URL, OC_MM_TOKEN, OC_MM_TEAM
 mkdir -p local/mm-files
 ```
 
-Set `OC_MM_URL`, `OC_MM_TOKEN` and `OC_MM_TEAM` there; real environment variables take precedence
-over the file. `.opencode/` is not tracked, so create `.opencode/opencode.json` yourself: the same
-config as in [Install](#install), keeping the `permission` block, with the plugin entry pointing at
-the working tree instead of the git spec and `downloadDir` at the untracked `local/` area.
+Real environment variables override `.env.local`. `.opencode/` is not tracked; create
+`.opencode/opencode.json` pointing at the `src` directory (v2 drops a path that is not a
+directory):
 
 ```json
-"plugin": [["../src/index.ts", { "downloadDir": "local/mm-files" }]]
+"plugins": [{ "package": "../src", "options": { "downloadDir": "local/mm-files" } }]
 ```
 
-Restart opencode after changing anything under `.opencode/`.
+Sources hot-reload. After editing `.opencode/opencode.json`, run `opencode reload`;
+`opencode plugin list` shows what loaded.
 
 ```sh
 bun run check   # tsc --noEmit
@@ -224,25 +176,20 @@ bun test
 bun run lint    # biome check .
 ```
 
-A command file under `.opencode/command/` can wrap all three into a single `/check`.
-
 ### `oc-mm` CLI
 
-A testing aid, not a feature of the plugin: the `oc-mm` binary runs the same tool definitions
-directly — no opencode session, no LLM — so a change can be exercised without restarting the TUI.
-Run it as `bun src/cli.ts …` in a clone, or `bun link` it to get `oc-mm` on `PATH`.
+A testing aid: runs the same tools without opencode or an LLM. Use `bun src/cli.ts …` in a clone,
+or `bun link` for `oc-mm` on `PATH`.
 
 ```sh
 bun src/cli.ts --help
-bun src/cli.ts list_channels
 bun src/cli.ts read_posts channel=my-channel since=2h
 bun src/cli.ts create_post channel=my-channel message="hello" --yes
 bun src/cli.ts api path=/teams/{team_id}/channels
 ```
 
-The `mattermost_` prefix is optional, values are coerced against the tool's schema (`limit=5`
-becomes a number), and write tools abort unless `--yes` is passed — the `permission` keys in
-`opencode.json` are read by opencode only, so the CLI carries its own gate.
+The `mattermost_` prefix is optional, values are coerced to the tool's schema (`limit=5` becomes a
+number), and writes abort without `--yes`.
 
 ## License
 

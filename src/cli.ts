@@ -1,11 +1,12 @@
 #!/usr/bin/env bun
-import { type ToolContext, type ToolDefinition, tool } from "@opencode-ai/plugin";
+import { z } from "zod";
 import { createMattermostContext } from "./mattermost/context.js";
 import { loadEnvFile, type MattermostEnv, mergeEnv, readMattermostEnv } from "./mattermost/env.js";
 import { createTools } from "./mattermost/tools/registry.js";
+import type { MmTool, MmToolContext } from "./mattermost/tools/types.js";
 
-type ToolMap = Record<string, ToolDefinition>;
-type ArgSchema = ToolDefinition["args"][string];
+type ToolMap = Record<string, MmTool>;
+type ArgSchema = z.core.$ZodType;
 
 const PREFIX = "mattermost_";
 // `--help` only prints tool names, args and descriptions — no server is contacted, so blank
@@ -25,7 +26,7 @@ export function parseArgv(argv: string[]): ParsedArgv {
 }
 
 function accepts(schema: ArgSchema, value: unknown): boolean {
-  return tool.schema.object({ value: schema }).safeParse({ value }).success;
+  return z.object({ value: schema }).safeParse({ value }).success;
 }
 
 function parseJson(text: string): { ok: true; value: unknown } | { ok: false } {
@@ -64,10 +65,7 @@ export function coerce(schema: ArgSchema | undefined, values: string[]): unknown
   return candidates.find((candidate) => accepts(schema, candidate)) ?? fallback;
 }
 
-export function parseToolArgs(
-  pairs: string[],
-  shape: ToolDefinition["args"],
-): Record<string, unknown> {
+export function parseToolArgs(pairs: string[], shape: z.ZodRawShape): Record<string, unknown> {
   const grouped = new Map<string, string[]>();
   for (const pair of pairs) {
     const eq = pair.indexOf("=");
@@ -80,7 +78,7 @@ export function parseToolArgs(
   return args;
 }
 
-export function resolveTool(tools: ToolMap, name: string): ToolDefinition | undefined {
+export function resolveTool(tools: ToolMap, name: string): MmTool | undefined {
   return tools[name] ?? tools[`${PREFIX}${name}`];
 }
 
@@ -93,7 +91,7 @@ export function usage(tools: ToolMap): string {
     "",
   ];
   for (const [id, def] of Object.entries(tools)) {
-    const args = Object.entries(def.args).map(([key, schema]) =>
+    const args = Object.entries(def.input.shape).map(([key, schema]) =>
       // A schema that accepts `undefined` is an optional arg.
       accepts(schema, undefined) ? `[${key}]` : key,
     );
@@ -103,18 +101,10 @@ export function usage(tools: ToolMap): string {
   return lines.join("\n");
 }
 
-function cliContext(approve: boolean): ToolContext {
-  const cwd = process.cwd();
+function cliContext(approve: boolean): MmToolContext {
   return {
-    sessionID: "cli",
-    messageID: "cli",
-    agent: "cli",
-    directory: cwd,
-    worktree: cwd,
-    abort: new AbortController().signal,
-    metadata: () => {},
-    ask: async (input) => {
-      const summary = input.patterns[0] ?? input.permission;
+    signal: new AbortController().signal,
+    confirm: async (_permission, summary) => {
       if (!approve) throw new Error(`permission required: ${summary} — re-run with --yes`);
       console.error(`[approved] ${summary}`);
     },
@@ -147,7 +137,10 @@ export async function main(argv: string[]): Promise<number> {
     return 1;
   }
 
-  const parsed = tool.schema.strictObject(def.args).safeParse(parseToolArgs(pairs, def.args));
+  const shape = def.input.shape;
+  // Strict, not `def.input`: a plain object schema strips unknown keys, and a typo'd key the CLI
+  // silently dropped would run the tool without the argument its caller meant to pass.
+  const parsed = z.strictObject(shape).safeParse(parseToolArgs(pairs, shape));
   if (!parsed.success) {
     const issues = parsed.error.issues
       .map((issue) => `${issue.path.join(".") || "(args)"}: ${issue.message}`)

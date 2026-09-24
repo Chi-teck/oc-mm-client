@@ -1,42 +1,28 @@
 import { access, constants, realpath, stat } from "node:fs/promises";
 import { join, relative, resolve, sep } from "node:path";
-import type { Plugin, PluginInput, PluginOptions } from "@opencode-ai/plugin";
+import type { Plugin, PluginOptions } from "@opencode/plugin";
+import type { Info as ToolInfo } from "@opencode/plugin/promise/tool";
 import { createMattermostClient } from "./mattermost/client.js";
 import { createMattermostContext, withTimeout } from "./mattermost/context.js";
 import { loadEnvFile, type MattermostEnv, mergeEnv, readMattermostEnv } from "./mattermost/env.js";
 import { createTools, describeClientError } from "./mattermost/tools/registry.js";
+import type { MmTool } from "./mattermost/tools/types.js";
 import { contains } from "./paths.js";
+import { createPrompter, type Prompter } from "./prompt.js";
 
 const STARTUP_TIMEOUT_MS = 10_000;
+
+/** The two paths every check below is anchored to. */
+interface Location {
+  /** The session directory: where relative paths in options and tool calls start. */
+  directory: string;
+  /** The git worktree root, which is where opencode resolves the agent's own `read` permission. */
+  worktree: string;
+}
 
 function strOption(options: PluginOptions | undefined, key: string): string | undefined {
   const value = options?.[key];
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
-}
-
-/**
- * Two channels, in this order. opencode's own log first: it captures nothing a plugin writes to
- * stdout or stderr, and in the TUI that text is painted into the frame the interface is about to
- * repaint — a flicker at startup, torn output later — while reaching no log file at all. Sent to
- * `/log` it lands where `--print-logs` and `log/opencode.log` look, and since the service name is
- * not rendered in the line, the message keeps carrying the plugin's name itself. `console.error` is
- * kept for the case where that endpoint does not take the message — the generated client `await`s a
- * bare fetch, so an unreachable server rejects, and a 400 comes back as `{ error }` instead of
- * throwing. A torn line in the TUI still says why the plugin went quiet; nothing at all does not.
- * Never rejects: every caller is on a path that must still return `{}`, and a failure to report the
- * diagnosis must not replace it. Always an error, since every line the plugin has to say is one
- * about a plugin that is not going to run.
- */
-async function log(input: PluginInput, message: string) {
-  try {
-    const { error } = await input.client.app.log({
-      body: { service: "oc-mm-client", level: "error", message },
-    });
-    if (!error) return;
-  } catch {
-    // A rejected transport means the message never arrived either; fall through to stderr.
-  }
-  console.error(message);
 }
 
 /**
@@ -85,7 +71,7 @@ function statReason(error: unknown): string {
  */
 async function resolveDownloadDir(
   value: unknown,
-  input: PluginInput,
+  input: Location,
 ): Promise<{ path?: string; error?: string }> {
   const refuse = (subject: string, reason: string) => ({
     error: `downloadDir ${subject} ${reason}`,
@@ -147,7 +133,7 @@ async function resolveDownloadDir(
  */
 async function resolveUploadRoot(
   value: unknown,
-  input: PluginInput,
+  input: Location,
 ): Promise<{ path?: string; error?: string }> {
   const refuse = (subject: string, reason: string) => ({
     error: `uploadRoot ${subject} ${reason}`,
@@ -175,7 +161,45 @@ async function resolveUploadRoot(
   return { path: resolved };
 }
 
-export default (async (input, options) => {
+/**
+ * One opencode tool for one of ours. `codemode: false` keeps it a direct tool call under its own
+ * name — Code Mode would hide it behind a JavaScript runtime, and the CLI, the tests and any
+ * permission rule all name `mattermost_*`. The confirmation goes to the TUI through `prompter`.
+ */
+function adapt(name: string, tool: MmTool, prompter: Prompter): ToolInfo {
+  return {
+    name,
+    description: tool.description,
+    input: tool.input,
+    options: { codemode: false },
+    execute: async (input, tctx) => {
+      const result = await tool.execute(input, {
+        signal: tctx.signal,
+        confirm: (permission, summary) =>
+          prompter.confirm({ sessionID: tctx.sessionID, permission, summary, signal: tctx.signal }),
+      });
+      if (typeof result === "string") return { content: result };
+      return {
+        content: result.output,
+        ...(result.title ? { metadata: { title: result.title } } : {}),
+      };
+    },
+  };
+}
+
+/**
+ * Every reason not to start is thrown, in one line. opencode v2 has no log endpoint for plugins, and
+ * a plugin's own stderr reaches no file when it runs in the background service; a throw from `setup`
+ * is what lands in the plugin's status — `failed`, with this message — and in `opencode.log`.
+ */
+async function setup(ctx: Plugin.Context): Promise<void> {
+  const options = ctx.options;
+  // `project.directory` is this checkout's root — the linked worktree's own, not the main one's —
+  // which is what `git rev-parse --show-toplevel` would say from the session directory.
+  const input: Location = {
+    directory: ctx.location.directory,
+    worktree: ctx.location.project.directory,
+  };
   // Anchored to the project directory, not the process cwd: `opencode run --dir=<project>` leaves
   // the cwd wherever it was launched, and a relative path would miss the project's `.env.local`.
   const fileEnv = loadEnvFile(join(input.directory, ".env.local"));
@@ -217,12 +241,15 @@ export default (async (input, options) => {
   if (uploadError) problems.push(uploadError);
   // `uploadRoot` is tested through its error, not its absence: unset is the default, not a mistake.
   if (!url || !token || !team || !downloadDir || uploadError) {
-    await log(input, `oc-mm-client disabled: ${problems.join("; ")}`);
-    return {};
+    throw new Error(`oc-mm-client disabled: ${problems.join("; ")}`);
   }
 
   const client = createMattermostClient({ url, token });
-  const ctx = createMattermostContext({ url, token, team }, client, { downloadDir, uploadRoot });
+  const mm = createMattermostContext({ url, token, team }, client, {
+    downloadDir,
+    uploadRoot,
+    ...input,
+  });
   try {
     // Probe the server once at load; registering tools we cannot serve would turn every
     // later tool call into an error. `me()` goes first because it is the call that proves the
@@ -230,8 +257,8 @@ export default (async (input, options) => {
     // and report a bad token as a bad team.
     await withTimeout(
       (async () => {
-        await ctx.me();
-        await ctx.team();
+        await mm.me();
+        await mm.team();
       })(),
       STARTUP_TIMEOUT_MS,
       `${url} did not respond within ${STARTUP_TIMEOUT_MS}ms`,
@@ -241,12 +268,17 @@ export default (async (input, options) => {
     // nothing else, and that sentence is empty when the body is not Mattermost's JSON envelope —
     // which printed a bare "oc-mm-client disabled:" with no reason at all.
     const described = describeClientError(error);
-    await log(
-      input,
+    throw new Error(
       `oc-mm-client disabled: ${described instanceof Error ? described.message : String(described)}`,
+      { cause: error },
     );
-    return {};
   }
 
-  return { tool: createTools(ctx) };
-}) satisfies Plugin;
+  const prompter = await createPrompter(ctx.rpc);
+  const tools = createTools(mm);
+  await ctx.tool.transform((editor) => {
+    for (const [name, tool] of Object.entries(tools)) editor.add(adapt(name, tool, prompter));
+  });
+}
+
+export default { id: "oc-mm-client", setup } satisfies Plugin.Plugin;
