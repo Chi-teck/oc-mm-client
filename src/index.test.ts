@@ -171,6 +171,73 @@ describe("plugin entry", () => {
     }
   });
 
+  it('sends a write with no TUI attached when confirm is "none"', async () => {
+    const server = startMockMattermost();
+    const tctx = { sessionID: "s", signal: new AbortController().signal };
+    try {
+      const options = {
+        url: server.url,
+        token: "tok",
+        team: "my-team",
+        downloadDir: DOWNLOAD_DIR,
+        confirm: "none",
+      };
+      const post = (await start(input, options)).mattermost_create_post;
+      const result = await post?.execute({ channel: "my-channel", message: "hi" }, tctx as never);
+      expect(result?.content).toContain("Posted to my-channel");
+      expect(server.paths).toContain("/api/v4/posts");
+    } finally {
+      server.stop();
+    }
+  });
+
+  it('refuses a write with no TUI attached when confirm is "tui", as when it is unset', async () => {
+    const server = startMockMattermost();
+    const tctx = { sessionID: "s", signal: new AbortController().signal };
+    try {
+      const options = {
+        url: server.url,
+        token: "tok",
+        team: "my-team",
+        downloadDir: DOWNLOAD_DIR,
+        confirm: "tui",
+      };
+      const post = (await start(input, options)).mattermost_create_post;
+      await expect(
+        post?.execute({ channel: "my-channel", message: "hi" }, tctx as never),
+      ).rejects.toThrow("no opencode TUI is attached");
+      expect(server.paths).not.toContain("/api/v4/posts");
+    } finally {
+      server.stop();
+    }
+  });
+
+  it("refuses a confirm that is not one of the known modes and quotes it", async () => {
+    const project = await newProject();
+    try {
+      const refuseConfirm = (confirm: unknown) =>
+        refuseOptions(project, { downloadDir: DOWNLOAD_DIR, confirm });
+      expect(await refuseConfirm("yes")).toBe(
+        'oc-mm-client disabled: confirm "yes" is not one of "tui", "none"',
+      );
+      expect(await refuseConfirm(1)).toContain('confirm 1 is not one of "tui", "none"');
+      expect(await refuseConfirm("  ")).toContain('confirm "  " is not one of');
+    } finally {
+      await rm(project, { recursive: true, force: true });
+    }
+  });
+
+  it("reports a bad confirm and a bad downloadDir in one line", async () => {
+    const project = await newProject();
+    try {
+      const line = await refuseOptions(project, { downloadDir: "../escape", confirm: "yes" });
+      expect(line).toContain("downloadDir ../escape resolves to ");
+      expect(line).toContain('; confirm "yes" is not one of');
+    } finally {
+      await rm(project, { recursive: true, force: true });
+    }
+  });
+
   it("registers no tools when credentials are missing", async () => {
     expect(await refusal(input, { downloadDir: DOWNLOAD_DIR })).toContain("oc-mm-client disabled");
   });

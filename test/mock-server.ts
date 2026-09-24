@@ -43,6 +43,9 @@ export function startMockMattermost(
       if (pathname === `/api/v4/teams/${MOCK_TEAM.id}/channels/name/${MOCK_CHANNEL.name}`) {
         return json(MOCK_CHANNEL);
       }
+      if (pathname === "/api/v4/posts" && request.method === "POST") {
+        return json({ id: "ppppppppppppppppppppppppp1", channel_id: MOCK_CHANNEL.id }, 201);
+      }
       return json({ message: `no mock route for ${pathname}`, status_code: 404 }, 404);
     },
   });

@@ -6,9 +6,9 @@ import { createMattermostClient } from "./mattermost/client.js";
 import { createMattermostContext, withTimeout } from "./mattermost/context.js";
 import { loadEnvFile, type MattermostEnv, mergeEnv, readMattermostEnv } from "./mattermost/env.js";
 import { createTools, describeClientError } from "./mattermost/tools/registry.js";
-import type { MmTool } from "./mattermost/tools/types.js";
+import type { MmTool, MmToolContext } from "./mattermost/tools/types.js";
 import { contains } from "./paths.js";
-import { createPrompter, type Prompter } from "./prompt.js";
+import { createPrompter } from "./prompt.js";
 
 const STARTUP_TIMEOUT_MS = 10_000;
 
@@ -161,12 +161,33 @@ async function resolveUploadRoot(
   return { path: resolved };
 }
 
+const CONFIRM_MODES = ["tui", "none"] as const;
+type ConfirmMode = (typeof CONFIRM_MODES)[number];
+
+/**
+ * `confirm` picks who approves a gated tool: `"tui"`, the default, asks the TUI dialog, which fails
+ * closed with no TUI attached; `"none"` approves at once, for headless runs where no dialog can ever
+ * answer and the `permission` rules are the only gate left. Anything else is refused rather than read
+ * as either, since guessing wrong in one direction lets writes through and in the other blocks them.
+ */
+function resolveConfirm(value: unknown): { mode?: ConfirmMode; error?: string } {
+  if (value === undefined) return { mode: "tui" };
+  if (CONFIRM_MODES.includes(value as ConfirmMode)) return { mode: value as ConfirmMode };
+  return {
+    error: `confirm ${JSON.stringify(value)} is not one of ${CONFIRM_MODES.map((mode) => `"${mode}"`).join(", ")}`,
+  };
+}
+
+/** Where one tool call's confirmation goes, given the call's own session and signal. */
+type Confirmer = (tctx: { sessionID: string; signal: AbortSignal }) => MmToolContext["confirm"];
+
 /**
  * One opencode tool for one of ours. `codemode: false` keeps it a direct tool call under its own
  * name — Code Mode would hide it behind a JavaScript runtime, and the CLI, the tests and any
- * permission rule all name `mattermost_*`. The confirmation goes to the TUI through `prompter`.
+ * permission rule all name `mattermost_*`. The confirmation goes wherever `confirmer` sends it, which
+ * the `confirm` option decides.
  */
-function adapt(name: string, tool: MmTool, prompter: Prompter): ToolInfo {
+function adapt(name: string, tool: MmTool, confirmer: Confirmer): ToolInfo {
   return {
     name,
     description: tool.description,
@@ -175,8 +196,7 @@ function adapt(name: string, tool: MmTool, prompter: Prompter): ToolInfo {
     execute: async (input, tctx) => {
       const result = await tool.execute(input, {
         signal: tctx.signal,
-        confirm: (permission, summary) =>
-          prompter.confirm({ sessionID: tctx.sessionID, permission, summary, signal: tctx.signal }),
+        confirm: confirmer(tctx),
       });
       if (typeof result === "string") return { content: result };
       return {
@@ -221,6 +241,7 @@ async function setup(ctx: Plugin.Context): Promise<void> {
     options?.uploadRoot,
     input,
   );
+  const { mode: confirmMode, error: confirmError } = resolveConfirm(options?.confirm);
   // Only what is still missing once options and environment are combined: telling someone whose url
   // and token are fine to "set OC_MM_URL, OC_MM_TOKEN and OC_MM_TEAM" sends them auditing two
   // settings that were already right. Both sources are named because either one satisfies it.
@@ -239,8 +260,9 @@ async function setup(ctx: Plugin.Context): Promise<void> {
   }
   if (downloadError) problems.push(downloadError);
   if (uploadError) problems.push(uploadError);
+  if (confirmError) problems.push(confirmError);
   // `uploadRoot` is tested through its error, not its absence: unset is the default, not a mistake.
-  if (!url || !token || !team || !downloadDir || uploadError) {
+  if (!url || !token || !team || !downloadDir || uploadError || !confirmMode) {
     throw new Error(`oc-mm-client disabled: ${problems.join("; ")}`);
   }
 
@@ -274,10 +296,17 @@ async function setup(ctx: Plugin.Context): Promise<void> {
     );
   }
 
+  // Registered under `"none"` too, though never asked there: `tui.ts` retries `attach` every 2 s
+  // until something answers, so leaving the RPC unregistered would keep every TUI polling forever.
   const prompter = await createPrompter(ctx.rpc);
+  const confirmer: Confirmer =
+    confirmMode === "none"
+      ? () => async () => {}
+      : (tctx) => (permission, summary) =>
+          prompter.confirm({ sessionID: tctx.sessionID, permission, summary, signal: tctx.signal });
   const tools = createTools(mm);
   await ctx.tool.transform((editor) => {
-    for (const [name, tool] of Object.entries(tools)) editor.add(adapt(name, tool, prompter));
+    for (const [name, tool] of Object.entries(tools)) editor.add(adapt(name, tool, confirmer));
   });
 }
 

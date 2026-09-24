@@ -1,0 +1,3 @@
+[test]
+# Only the repo's own suites: `local/` and `.opencode/node_modules` hold other projects' tests.
+root = "src"

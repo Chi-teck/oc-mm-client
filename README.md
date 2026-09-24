@@ -7,7 +7,7 @@ channels, search and download attachments, plus a raw REST fallback.
 
 Requirements: [Bun](https://bun.sh) 1.0+, opencode 2.0.14+, `git`, and a Mattermost
 [personal access token](https://developers.mattermost.com/integrate/reference/personal-access-token/).
-For opencode v1, use the `1.x` branch (plugin 0.x, `v0.*` tags), which gets fixes only.
+For opencode v1, pin `#v0.6.0`, the last release of the plugin 0.x line.
 
 ## Install
 
@@ -36,7 +36,7 @@ bumping the tag is what triggers a re-download.
 
 opencode v2 has no permission prompt for plugin tools (`"ask"` rules do nothing for them), so the
 plugin's TUI half shows an Allow/Deny dialog before every write, naming what it is about to do.
-Nothing is sent before the answer. It fails closed:
+Nothing is sent before the answer. By default (`"confirm": "tui"`) it fails closed:
 
 - With no TUI attached (`opencode run`, a bare `opencode serve`, the web app) writes are refused.
   Reads work everywhere.
@@ -44,9 +44,14 @@ Nothing is sent before the answer. It fails closed:
 - An unanswered dialog gives up after 10 minutes, closing the last TUI refuses what it left open,
   and an interrupted tool call withdraws the dialog.
 
-There is no channel or user allowlist, so the dialog is the only gate — `mattermost_api` matters
-most, as it reaches every endpoint the token can (it asks only for non-GET requests). A `"deny"`
-rule still removes a tool from the agent's toolset.
+There is no channel or user allowlist, so by default the dialog is the only gate — `mattermost_api`
+matters most, as it reaches every endpoint the token can (it asks only for non-GET requests). A
+`"deny"` rule still removes a tool from the agent's toolset.
+
+For headless use (`opencode run`, `opencode acp`, `opencode serve`, cron jobs), set
+`"confirm": "none"` in the plugin options: writes then go through without a dialog. The `permission`
+block becomes the only gate, and `mattermost_api` reaches every endpoint the token can unless it is
+denied, e.g. `"permission": { "mattermost_api": "deny" }`.
 
 ## Configuration
 
@@ -65,9 +70,13 @@ Plugin options take precedence over the environment:
   "url": "https://mattermost.example.com",
   "token": "…",
   "team": "…",
-  "downloadDir": "attachments"
+  "downloadDir": "attachments",
+  "confirm": "tui"
 }
 ```
+
+`confirm` (optional, defaults to `"tui"`) selects who approves writes: `"tui"` shows the
+[dialog](#confirmation), and `"none"` approves them without asking. Any other value is refused.
 
 `downloadDir` (required, no default) is where `mattermost_get_file` saves attachments. A relative
 value resolves against the opencode project directory. It must be an existing, writable directory
@@ -103,8 +112,9 @@ Nothing changes under a running install until you edit the tag.
 
 - **v1.0.0** moves to opencode v2 (v1 cannot load it, and v2 cannot load v0.x). The entry becomes
   `"plugins": [{ "package": …, "options": { … } }]`, and the `permission` `"ask"` rules go — writes
-  are confirmed by the plugin's own [dialog](#confirmation), and refused under `opencode run`. A
-  startup problem shows as a failed plugin. Tool names, arguments and options are unchanged.
+  are confirmed by the plugin's own [dialog](#confirmation); under `opencode run`, set
+  `"confirm": "none"`. A startup problem shows as a failed plugin. Tool names, arguments and
+  options are unchanged apart from the new `confirm`.
 - **v0.6.0** adds the ungated `mattermost_follow_thread` and `mattermost_unfollow_thread`.
 - **v0.5.1** is v0.5.0 with correct release metadata; install it instead of v0.5.0.
 - **v0.5.0** adds `schedule_at` to `mattermost_create_post`.
